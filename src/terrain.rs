@@ -3,6 +3,7 @@ mod heightfield;
 use crate::{
     gpu::{buffer, buffer_with_flags, readback_u32, transition, uav_barrier, upload_to_gpu},
     pipeline::{root_descriptor, serialize_signature, shader},
+    scene::TerrainLodView,
 };
 use heightfield::{Heightfield, GRID_CELLS, NODES_PER_ROOT, ROOT_COUNT, ROOT_GRID};
 use std::mem::ManuallyDrop;
@@ -173,7 +174,7 @@ pub struct Terrain {
     arguments: ID3D12Resource,
     samples: Vec<f32>,
     initialized: bool,
-    lod_view: Option<[f32; 4]>,
+    lod_view: Option<TerrainLodView>,
     generation: u64,
     settled: bool,
 }
@@ -241,7 +242,7 @@ impl Terrain {
         &mut self,
         list: &ID3D12GraphicsCommandList,
         frame: u64,
-        view: [f32; 4],
+        view: TerrainLodView,
         feedback: &mut LodFeedback,
     ) -> Result<()> {
         let same_view = self.lod_view == Some(view);
@@ -585,6 +586,9 @@ mod tests {
             let mut terrain = Terrain::new(&device, &list, &mut staging)?;
             let mut near = Camera::default();
             near.eye = glam::vec3(-250.0, 525.0, 2030.0);
+            let mut turned = Camera::default();
+            turned.eye = near.eye;
+            turned.update(glam::Vec2::ZERO, glam::vec2(1256.637, 0.0), 0.0, false);
             let mut far = Camera::default();
             far.eye.y = 2_000_000.0;
             let field = Heightfield::generate();
@@ -594,6 +598,7 @@ mod tests {
             let mut counts = Vec::new();
             for (camera, viewport) in [
                 (&near, [1280, 720]),
+                (&turned, [1280, 720]),
                 // Use a synthetic projection scale to drive even gentle hills into pool saturation.
                 (&near, [7680, 1_000_000]),
                 (&far, [1280, 720]),
@@ -646,10 +651,15 @@ mod tests {
                 (ROOT_COUNT as usize + 1..POOL_CAPACITY as usize).contains(&counts[0]),
                 "{counts:?}"
             );
+            assert!(
+                counts[1] < counts[0],
+                "turning away should spend less of the LOD budget: {counts:?}"
+            );
             assert_eq!(
                 counts,
                 [
                     counts[0],
+                    counts[1],
                     POOL_CAPACITY as usize,
                     ROOT_COUNT as usize,
                     counts[0]

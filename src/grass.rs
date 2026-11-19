@@ -1,8 +1,9 @@
+use crate::camera::frustum_planes;
 use crate::gpu::{buffer, upload};
 use crate::pipeline::{SurfacePass, SurfacePipelines};
 use crate::terrain::{Terrain, SIDE_METERS};
 use glam::{IVec2, Mat4, Vec2, Vec3, Vec4};
-use std::{fmt, mem::size_of};
+use std::{collections::HashMap, fmt, mem::size_of};
 use windows::{
     core::{Error, Interface, Result},
     Win32::{
@@ -148,8 +149,93 @@ fn grid_radius(distance: f32, spacing: f32) -> i32 {
 
 #[derive(Default)]
 struct PatchGrid {
-    patches: Vec<Patch>,
-    bounds: Option<(IVec2, i32)>,
+    tiles: HashMap<IVec2, GrassTile>,
+    bounds: Option<(IVec2, IVec2)>,
+}
+
+const TILE_SIDE: usize = 16;
+
+struct GrassTile {
+    patches: Vec<(Patch, Vec3)>,
+    row_offsets: [usize; TILE_SIDE + 1],
+    min: Vec3,
+    max: Vec3,
+}
+
+impl GrassTile {
+    fn new(tile: IVec2, level: usize, lod: &GrassLod, terrain: &Terrain) -> Self {
+        let mut patches = Vec::with_capacity(TILE_SIDE * TILE_SIDE);
+        let mut row_offsets = [0; TILE_SIDE + 1];
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        let corner = tile * TILE_SIDE as i32;
+        for (z, end) in row_offsets[1..].iter_mut().enumerate() {
+            for x in 0..TILE_SIDE {
+                if let Some(patch) = make_patch(corner + IVec2::new(x as i32, z as i32), level, lod)
+                {
+                    let xz = Vec2::from_array(patch.center);
+                    let center = Vec3::new(xz.x, terrain.approximate_height(xz), xz.y);
+                    min = min.min(center);
+                    max = max.max(center);
+                    patches.push((patch, center));
+                }
+            }
+            *end = patches.len();
+        }
+        Self {
+            patches,
+            row_offsets,
+            min,
+            max,
+        }
+    }
+
+    fn visible(&self, eye: Vec2, limit_squared: f32, planes: &[Vec4; 6], reach: f32) -> bool {
+        if self.patches.is_empty() {
+            return false;
+        }
+        let min_xz = Vec2::new(self.min.x, self.min.z);
+        let max_xz = Vec2::new(self.max.x, self.max.z);
+        eye.clamp(min_xz, max_xz).distance_squared(eye) < limit_squared
+            && planes.iter().all(|plane| {
+                let corner = Vec3::select(plane.truncate().cmpge(Vec3::ZERO), self.max, self.min);
+                plane.dot(corner.extend(1.0)) >= -reach - 0.001
+            })
+    }
+
+    fn row(&self, z: usize) -> &[(Patch, Vec3)] {
+        &self.patches[self.row_offsets[z]..self.row_offsets[z + 1]]
+    }
+}
+
+impl PatchGrid {
+    fn update(
+        &mut self,
+        cell: IVec2,
+        radius: i32,
+        level: usize,
+        lod: &GrassLod,
+        terrain: &Terrain,
+    ) -> (IVec2, IVec2) {
+        let tile_side = IVec2::splat(TILE_SIDE as i32);
+        let first = (cell - radius).div_euclid(tile_side);
+        let last = (cell + radius).div_euclid(tile_side);
+        if self.bounds != Some((first, last)) {
+            // World tiles and their sampled heights remain valid as the camera crosses cells.
+            self.tiles
+                .retain(|&p, _| p.cmpge(first).all() && p.cmple(last).all());
+            for z in first.y..=last.y {
+                for x in first.x..=last.x {
+                    let tile = IVec2::new(x, z);
+                    self.tiles
+                        .entry(tile)
+                        .or_insert_with(|| GrassTile::new(tile, level, lod, terrain));
+                }
+            }
+            self.bounds = Some((first, last));
+        }
+        (first, last)
+    }
 }
 
 fn hash_patch(mut value: u32) -> u32 {
@@ -158,41 +244,30 @@ fn hash_patch(mut value: u32) -> u32 {
     value ^ (value >> 16)
 }
 
-fn populate_grid(patches: &mut Vec<Patch>, cell: IVec2, radius: i32, level: usize, lod: &GrassLod) {
-    patches.clear();
+fn make_patch(cell: IVec2, level: usize, lod: &GrassLod) -> Option<Patch> {
     let patch_radius = PATCH_RADIUS.max(lod.spacing * 0.4);
     let lod_salt = (level as u32).wrapping_mul(0x9e3779b9);
-    for z in cell.y - radius..=cell.y + radius {
-        for x in cell.x - radius..=cell.x + radius {
-            let seed = (x as u32).wrapping_mul(0x8da6b343)
-                ^ (z as u32).wrapping_mul(0xd8163841)
-                ^ lod_salt;
-            // Jitter across the entire cell, with independent patterns at each grid spacing.
-            let noise = hash_patch(seed ^ 0x25b1ce3d);
-            let jitter = (Vec2::new((noise & 0xffff) as f32, (noise >> 16) as f32) + 0.5)
-                * (1.0 / 65_536.0)
-                - 0.5;
-            let center = (Vec2::new(x as f32, z as f32) + jitter) * lod.spacing;
-            if center.abs().max_element() + patch_radius <= SIDE_METERS * 0.5 {
-                let height_noise = (hash_patch(seed ^ 0x7301a2e7) >> 16) as f32 / 65_535.0;
-                patches.push(Patch {
-                    center: center.to_array(),
-                    radius: patch_radius,
-                    height: 0.30 + 0.12 * height_noise,
-                    seed,
-                    blade_count: MAX_BLADES as f32,
-                    fade: 1.0,
-                    width_scale: 1.0,
-                });
-            }
-        }
+    let seed = (cell.x as u32).wrapping_mul(0x8da6b343)
+        ^ (cell.y as u32).wrapping_mul(0xd8163841)
+        ^ lod_salt;
+    // Jitter across the entire cell, with independent patterns at each grid spacing.
+    let noise = hash_patch(seed ^ 0x25b1ce3d);
+    let jitter =
+        (Vec2::new((noise & 0xffff) as f32, (noise >> 16) as f32) + 0.5) * (1.0 / 65_536.0) - 0.5;
+    let center = (cell.as_vec2() + jitter) * lod.spacing;
+    if center.abs().max_element() + patch_radius > SIDE_METERS * 0.5 {
+        return None;
     }
-}
-
-fn frustum_planes(view_projection: Mat4) -> [Vec4; 6] {
-    let rows = view_projection.transpose();
-    let (x, y, z, w) = (rows.x_axis, rows.y_axis, rows.z_axis, rows.w_axis);
-    [w + x, w - x, w + y, w - y, z, w - z].map(|plane| plane / plane.truncate().length())
+    let height_noise = (hash_patch(seed ^ 0x7301a2e7) >> 16) as f32 / 65_535.0;
+    Some(Patch {
+        center: center.to_array(),
+        radius: patch_radius,
+        height: 0.30 + 0.12 * height_noise,
+        seed,
+        blade_count: MAX_BLADES as f32,
+        fade: 1.0,
+        width_scale: 1.0,
+    })
 }
 
 fn smooth_step(start: f32, end: f32, value: f32) -> f32 {
@@ -395,6 +470,7 @@ impl Grass {
         }
         let height_scale = self.settings.height_percent as f32 / 100.0;
         let mut fade_in = [-1.0, 0.0];
+        let mut visible_tiles = Vec::new();
         for (level, (grid, lod)) in self.grids.iter_mut().zip(&LODS).enumerate() {
             let end = self.settings.lod_ends[level];
             let limit = distance.min(end);
@@ -403,10 +479,10 @@ impl Grass {
             }
             let cell = (xz / lod.spacing).round().as_ivec2();
             let radius = grid_radius(limit, lod.spacing);
-            if grid.bounds != Some((cell, radius)) {
-                populate_grid(&mut grid.patches, cell, radius, level, lod);
-                grid.bounds = Some((cell, radius));
-            }
+            let (first, last) = grid.update(cell, radius, level, lod, terrain);
+            let limit_squared = limit * limit;
+            // Include scattering, bend and the widest ribbon in the frustum bound.
+            let reach = PATCH_RADIUS.max(lod.spacing * 0.4) + 1.05 * height_scale.max(1.0);
             let fade_out_start = lod.transition_start(fade_in[1], end);
             let final_level = level + 1 == LOD_COUNT;
             let has_draw_fade = final_level || distance - FADE_DISTANCE < end;
@@ -415,73 +491,79 @@ impl Grass {
             } else {
                 2.0
             };
-            for patch in &grid.patches {
-                let patch_xz = Vec2::from_array(patch.center);
-                if patch_xz.distance_squared(xz) >= limit * limit {
-                    continue;
+            for z in first.y..=last.y {
+                visible_tiles.clear();
+                for x in first.x..=last.x {
+                    let tile = &grid.tiles[&IVec2::new(x, z)];
+                    if tile.visible(xz, limit_squared, &planes, reach) {
+                        visible_tiles.push(tile);
+                    }
                 }
-                let center = Vec3::new(
-                    patch.center[0],
-                    terrain.approximate_height(patch_xz),
-                    patch.center[1],
-                );
-                let patch_distance = center.distance(eye);
-                let incoming = smooth_step(fade_in[0], fade_in[1], patch_distance);
-                let outgoing = if final_level {
-                    1.0
-                } else {
-                    1.0 - smooth_step(fade_out_start, end, patch_distance)
-                };
-                let coverage = incoming * outgoing;
-                if coverage == 0.0 {
-                    continue;
-                }
-                let height = patch.height * height_scale;
-                let projected_height = height * pixels_at_one_meter / patch_distance.max(1.0);
-                // Reduce the silhouette gradually as it becomes too small to resolve.
-                let mut fade = smooth_step(0.16, 2.0, projected_height);
-                if has_draw_fade {
-                    fade *= 1.0 - smooth_step(distance - FADE_DISTANCE, distance, patch_distance);
-                }
-                if fade < 0.005 {
-                    continue;
-                }
-                // Include scattering, bend and the widest ribbon in the frustum bound.
-                let reach = patch.radius + 1.05 * height_scale.max(1.0);
-                if planes
-                    .iter()
-                    .any(|plane| plane.dot(center.extend(1.0)) < -reach)
-                {
-                    continue;
-                }
-                let base_blades = if self.full_density {
-                    MAX_BLADES as f32
-                } else {
-                    blades_at_distance(patch_distance)
-                };
-                // Crossfade the populations so surviving blades keep their silhouette.
-                let mut remaining = blades_in_lod_blend(
-                    base_blades * density_multiplier * density,
-                    coverage,
-                    patch.seed,
-                );
-                let mut seed = patch.seed;
-                let width_scale = (MAX_BLADES as f32 / base_blades).min(MAX_WIDTH_SCALE);
-                // Mesh workgroups and the fallback index buffer each hold up to 32 blades.
-                // Add batches with distinct seeds so higher density also affects nearby grass.
-                while remaining > 0.0 {
-                    let blade_count = remaining.min(MAX_BLADES as f32);
-                    self.buckets[blade_count.ceil() as usize] += 1;
-                    self.visible.push(Patch {
-                        height,
-                        seed,
-                        blade_count,
-                        fade,
-                        width_scale,
-                        ..*patch
-                    });
-                    remaining -= blade_count;
-                    seed = seed.wrapping_add(0x9e3779b9);
+                // Keep the world-cell draw order for blades with coincident depth.
+                let patches = (0..TILE_SIDE)
+                    .flat_map(|row| visible_tiles.iter().flat_map(move |tile| tile.row(row)));
+                for &(patch, center) in patches {
+                    let patch_xz = Vec2::from_array(patch.center);
+                    if patch_xz.distance_squared(xz) >= limit_squared {
+                        continue;
+                    }
+                    if planes
+                        .iter()
+                        .any(|plane| plane.dot(center.extend(1.0)) < -reach)
+                    {
+                        continue;
+                    }
+                    let patch_distance = center.distance(eye);
+                    let incoming = smooth_step(fade_in[0], fade_in[1], patch_distance);
+                    let outgoing = if final_level {
+                        1.0
+                    } else {
+                        1.0 - smooth_step(fade_out_start, end, patch_distance)
+                    };
+                    let coverage = incoming * outgoing;
+                    if coverage == 0.0 {
+                        continue;
+                    }
+                    let height = patch.height * height_scale;
+                    let projected_height = height * pixels_at_one_meter / patch_distance.max(1.0);
+                    // Reduce the silhouette gradually as it becomes too small to resolve.
+                    let mut fade = smooth_step(0.16, 2.0, projected_height);
+                    if has_draw_fade {
+                        fade *=
+                            1.0 - smooth_step(distance - FADE_DISTANCE, distance, patch_distance);
+                    }
+                    if fade < 0.005 {
+                        continue;
+                    }
+                    let base_blades = if self.full_density {
+                        MAX_BLADES as f32
+                    } else {
+                        blades_at_distance(patch_distance)
+                    };
+                    // Crossfade the populations so surviving blades keep their silhouette.
+                    let mut remaining = blades_in_lod_blend(
+                        base_blades * density_multiplier * density,
+                        coverage,
+                        patch.seed,
+                    );
+                    let mut seed = patch.seed;
+                    let width_scale = (MAX_BLADES as f32 / base_blades).min(MAX_WIDTH_SCALE);
+                    // Mesh workgroups and the fallback index buffer each hold up to 32 blades.
+                    // Add batches with distinct seeds so higher density also affects nearby grass.
+                    while remaining > 0.0 {
+                        let blade_count = remaining.min(MAX_BLADES as f32);
+                        self.buckets[blade_count.ceil() as usize] += 1;
+                        self.visible.push(Patch {
+                            height,
+                            seed,
+                            blade_count,
+                            fade,
+                            width_scale,
+                            ..patch
+                        });
+                        remaining -= blade_count;
+                        seed = seed.wrapping_add(0x9e3779b9);
+                    }
                 }
             }
             fade_in = [fade_out_start, end];
@@ -616,10 +698,16 @@ mod tests {
         const RADIUS: i32 = 8;
         let side = (2 * RADIUS + 1) as usize;
         for (level, lod) in LODS.iter().enumerate() {
-            let mut patches = Vec::new();
-            let mut shifted = Vec::new();
-            populate_grid(&mut patches, IVec2::ZERO, RADIUS, level, lod);
-            populate_grid(&mut shifted, IVec2::X, RADIUS, level, lod);
+            let grid = |center: IVec2| {
+                (-RADIUS..=RADIUS)
+                    .flat_map(|z| {
+                        (-RADIUS..=RADIUS)
+                            .filter_map(move |x| make_patch(center + IVec2::new(x, z), level, lod))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let patches = grid(IVec2::ZERO);
+            let shifted = grid(IVec2::X);
             let mut min = Vec2::ZERO;
             let mut max = Vec2::ZERO;
             for (index, patch) in patches.iter().enumerate() {

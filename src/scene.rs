@@ -1,4 +1,7 @@
-use crate::{camera::Camera, terrain};
+use crate::{
+    camera::{frustum_planes, Camera},
+    terrain,
+};
 use glam::{Mat4, Vec3};
 use std::f64::consts::TAU;
 
@@ -93,6 +96,13 @@ pub struct Frame {
     terrain_grid: [u32; 4],
     pub fps_hud: [u32; 4],
     depth_projection: [f32; 4],
+    terrain_frustum: [[f32; 4]; 6],
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub struct TerrainLodView {
+    view_projection: [f32; 16],
+    camera_and_scale: [f32; 4],
 }
 
 impl Frame {
@@ -108,6 +118,7 @@ impl Frame {
         let aspect = width as f32 / height as f32;
         let projection =
             Mat4::perspective_rh(56f32.to_radians(), aspect, 0.12, camera.draw_distance);
+        let view_projection = projection * camera.view();
         let sun = animation.sun_direction();
         // Keep enough shadow texels across the two-metre cube in the near view.
         let extent = (camera.eye.y - ground).abs().clamp(32.0, 3_850.0);
@@ -117,7 +128,7 @@ impl Frame {
         let model = Mat4::from_translation(Vec3::Y * (ground + CUBE_CLEARANCE + CUBE_HALF_SIZE))
             * Mat4::from_rotation_y(animation.angle as f32);
         Self {
-            view_projection: (projection * camera.view()).to_cols_array(),
+            view_projection: view_projection.to_cols_array(),
             model: model.to_cols_array(),
             light_projection: (light_projection * light_view).to_cols_array(),
             camera: camera.eye.extend(1.0).to_array(),
@@ -133,6 +144,7 @@ impl Frame {
             terrain_grid: terrain::GRID,
             fps_hud: [0; 4],
             depth_projection: [projection.z_axis.z, projection.w_axis.z, 0.0, 0.0],
+            terrain_frustum: frustum_planes(view_projection).map(|plane| plane.to_array()),
         }
     }
 
@@ -144,14 +156,16 @@ impl Frame {
         self.terrain_params[2]
     }
 
-    // Camera position and projection scale are the only view inputs to projectedError.
-    pub fn terrain_lod_view(&self) -> [f32; 4] {
-        [
-            self.camera[0],
-            self.camera[1],
-            self.camera[2],
-            self.pixels_at_one_meter(),
-        ]
+    pub fn terrain_lod_view(&self) -> TerrainLodView {
+        TerrainLodView {
+            view_projection: self.view_projection,
+            camera_and_scale: [
+                self.camera[0],
+                self.camera[1],
+                self.camera[2],
+                self.pixels_at_one_meter(),
+            ],
+        }
     }
 }
 

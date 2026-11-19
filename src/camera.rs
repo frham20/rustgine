@@ -1,8 +1,14 @@
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use std::f32::consts::TAU;
 
 const LOOK_SENSITIVITY: f32 = 0.0025;
 const PITCH_LIMIT: f32 = 89.0_f32.to_radians();
+
+pub fn frustum_planes(view_projection: Mat4) -> [Vec4; 6] {
+    let rows = view_projection.transpose();
+    let (x, y, z, w) = (rows.x_axis, rows.y_axis, rows.z_axis, rows.w_axis);
+    [w + x, w - x, w + y, w - y, z, w - z].map(|plane| plane / plane.truncate().length())
+}
 
 pub struct Camera {
     pub eye: Vec3,

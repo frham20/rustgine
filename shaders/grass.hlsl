@@ -54,7 +54,7 @@ StructuredBuffer<Patch> patches : register(t2);
 static const uint MAX_BLADES = 32;
 static const uint VERTICES_PER_BLADE = 8;
 static const uint TRIANGLES_PER_BLADE = 6;
-static const uint GROUP_SIZE = 128;
+static const uint GROUP_SIZE = 32;
 
 uint hash(uint value) {
     value ^= value >> 16;

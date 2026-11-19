@@ -41,7 +41,26 @@ float projectedError(TerrainNode node) {
     float distance = length(view);
     float3 normal = normalize(cross(b - a, c - a));
     float incidence = max(0.42, abs(dot(normal, view)) / max(distance, 1.0));
-    return terrainParams.z * node.error / (max(distance, 15.0) * incidence);
+    float pixels = terrainParams.z * node.error / (max(distance, 15.0) * incidence);
+    if (pixels >= MERGE_PIXELS && distance > 192.0) {
+        float3 lo = min(a, min(b, c));
+        float3 hi = max(a, max(b, c));
+        // Bound the whole subtree, including height departures from the parent triangle.
+        lo.y -= node.error;
+        hi.y += node.error;
+        float outside = 0.0;
+        [unroll] for (uint i = 0; i < 6; ++i) {
+            float4 plane = terrainFrustum[i];
+            float3 corner = lerp(lo, hi, step(0.0, plane.xyz));
+            outside = max(outside, -dot(plane, float4(corner, 1.0)));
+        }
+        // Retain a guard band and nearby detail so rotations and shadow casters stay stable.
+        float guard = max(72.0, 0.12 * distance);
+        float offscreen = smoothstep(guard, 2.0 * guard, outside)
+                        * smoothstep(192.0, 320.0, distance);
+        pixels *= lerp(1.0, 0.35, offscreen);
+    }
+    return pixels;
 }
 
 uint3 classify(uint slot) {
