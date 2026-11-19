@@ -48,6 +48,10 @@ fn main() {
         ("grass_vs", "vs_6_0"),
         ("grass_ps", "ps_6_0"),
         ("grass_ms", "ms_6_5"),
+        ("grass_classify", "cs_6_0"),
+        ("grass_scan", "cs_6_0"),
+        ("grass_commands", "cs_6_0"),
+        ("grass_scatter", "cs_6_0"),
         ("terrain_init", "cs_6_0"),
         ("terrain_evaluate", "cs_6_0"),
         ("terrain_split_offsets", "cs_6_0"),
@@ -67,6 +71,8 @@ fn main() {
             "shaders/deferred.hlsl"
         } else if entry.starts_with("imgui_") {
             "shaders/imgui.hlsl"
+        } else if entry.starts_with("grass_") && profile == "cs_6_0" {
+            "shaders/grass_generate.hlsl"
         } else if entry.starts_with("grass_") {
             "shaders/grass.hlsl"
         } else if entry.starts_with("terrain_seam_") {

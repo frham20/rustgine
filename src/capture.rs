@@ -17,6 +17,7 @@ pub struct SceneTimer {
 pub enum GpuMark {
     Start,
     TerrainReady,
+    GrassReady,
     ShadowsReady,
     SurfacesReady,
     GeometryReady,
@@ -66,7 +67,7 @@ impl SceneTimer {
     }
 
     // Read after waiting for the capture fence.
-    pub unsafe fn pass_milliseconds(&self, ticks_per_second: u64) -> Result<[f64; 6]> {
+    pub unsafe fn pass_milliseconds(&self, ticks_per_second: u64) -> Result<[f64; 7]> {
         let mut mapped = ptr::null_mut();
         self.readback.Map(
             0,

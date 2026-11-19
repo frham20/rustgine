@@ -328,6 +328,7 @@ impl Renderer {
         let scene = RenderScene::new(
             &device,
             &list,
+            &pipes.root,
             scene_pipelines,
             slots.len(),
             grass_full_density,
@@ -655,16 +656,6 @@ impl Renderer {
         slot.allocator.Reset()?;
         let list = &self.list;
         list.Reset(&slot.allocator, None)?;
-        if let Some(grass) = &mut self.scene.grass {
-            grass.prepare(
-                &self.device,
-                i,
-                frame.view_projection(),
-                camera.eye,
-                frame.pixels_at_one_meter(),
-                &self.scene.terrain,
-            )?;
-        }
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::Start);
         }
@@ -676,6 +667,18 @@ impl Renderer {
         )?;
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::TerrainReady);
+        }
+        if let Some(grass) = &mut self.scene.grass {
+            grass.prepare(
+                &self.device,
+                list,
+                i,
+                slot.constants.GetGPUVirtualAddress(),
+                &self.scene.terrain,
+            )?;
+        }
+        if let Some(timer) = &timer {
+            timer.mark(list, GpuMark::GrassReady);
         }
         list.SetGraphicsRootSignature(&self.pipes.root);
         list.SetDescriptorHeaps(&[Some(self.srv.heap.clone())]);
@@ -732,6 +735,13 @@ impl Renderer {
             let scene = Readback::record(&self.device, list, &targets.color)?;
             let display = Readback::record(&self.device, list, back)?;
             let terrain_count = self.scene.terrain.capture_count(&self.device, list)?;
+            let grass_counts = self
+                .scene
+                .grass
+                .as_ref()
+                .map(|grass| grass.capture_counts(&self.device, list, i))
+                .transpose()?
+                .flatten();
             transition(
                 list,
                 &targets.color,
@@ -744,7 +754,7 @@ impl Renderer {
                 D3D12_RESOURCE_STATE_COPY_SOURCE,
                 D3D12_RESOURCE_STATE_PRESENT,
             );
-            Some((scene, display, terrain_count))
+            Some((scene, display, terrain_count, grass_counts))
         } else {
             transition(
                 list,
@@ -763,7 +773,9 @@ impl Renderer {
         };
         self.swap.Present(0, present_flags).ok()?;
         self.slots[i].fence_value = self.timeline.signal(&self.queue)?;
-        if let (Some(path), Some((scene, display, terrain_count))) = (capture, readbacks) {
+        if let (Some(path), Some((scene, display, terrain_count, grass_counts))) =
+            (capture, readbacks)
+        {
             self.timeline.wait(self.slots[i].fence_value)?;
             let (peak, count) = scene.scene_peak()?;
             display.write_ppm(path)?;
@@ -772,13 +784,16 @@ impl Renderer {
                 path.display()
             );
             if let Some(timer) = timer {
-                let [prepare, shadows, surfaces, grass_ms, resolve, output] =
+                let [prepare, grass_generate, shadows, surfaces, grass_ms, resolve, output] =
                     timer.pass_milliseconds(self.queue.GetTimestampFrequency()?)?;
-                let scene_ms = prepare + shadows + surfaces + grass_ms + resolve;
+                let scene_ms = prepare + grass_generate + shadows + surfaces + grass_ms + resolve;
                 let triangles = readback_u32(&terrain_count)?;
                 println!("Terrain: {triangles} active triangles.");
-                let (patches, blades_triangles) =
-                    self.scene.grass.as_ref().map_or((0, 0), Grass::counts);
+                let (patches, blades_triangles) = grass_counts
+                    .as_ref()
+                    .map(|readback| Grass::read_counts(readback))
+                    .transpose()?
+                    .unwrap_or_default();
                 if let Some(grass) = &self.scene.grass {
                     println!("Grass distance: {} m.", grass.draw_distance());
                 }
@@ -789,7 +804,7 @@ impl Renderer {
                     RenderMode::WireframeOnly => "wireframe",
                 };
                 println!(", {grass_ms:.3} ms grass geometry.");
-                println!("GPU passes (ms): terrain {prepare:.3}, shadows {shadows:.3}, surfaces {surfaces:.3}, grass {grass_ms:.3}, {resolve_label} {resolve:.3}, output {output:.3}, total {:.3}.", scene_ms + output);
+                println!("GPU passes (ms): terrain {prepare:.3}, grass generation {grass_generate:.3}, shadows {shadows:.3}, surfaces {surfaces:.3}, grass {grass_ms:.3}, {resolve_label} {resolve:.3}, output {output:.3}, total {:.3}.", scene_ms + output);
             }
         }
         self.check_debug()?;

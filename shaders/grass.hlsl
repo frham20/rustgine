@@ -1,6 +1,7 @@
 #include "terrain_common.hlsli"
 #include "terrain_materials.hlsli"
 #include "gbuffer.hlsli"
+#include "grass_common.hlsli"
 
 // Zero for internal nodes, slot + 1 for the triangles in this frame's draws.
 StructuredBuffer<uint> activeLeaves : register(t7);
@@ -40,29 +41,12 @@ float4 groundSurface(float2 worldXZ) {
     return av + u * (bv - av) + v * (cv - av);
 }
 
-struct Patch {
-    float2 center;
-    float radius;
-    float height;
-    uint seed;
-    float bladeCount;
-    float fade;
-    float widthScale;
-};
 StructuredBuffer<Patch> patches : register(t2);
+ByteAddressBuffer grassDrawData : register(t13);
+cbuffer GrassDraw : register(b2) { uint patchBase; }
 
-static const uint MAX_BLADES = 32;
 static const uint VERTICES_PER_BLADE = 8;
-static const uint TRIANGLES_PER_BLADE = 6;
 static const uint GROUP_SIZE = 32;
-
-uint hash(uint value) {
-    value ^= value >> 16;
-    value *= 0x7feb352d;
-    value ^= value >> 15;
-    value *= 0x846ca68b;
-    return value ^ (value >> 16);
-}
 
 float random01(uint seed) {
     return float(hash(seed) >> 8) * (1.0 / 16777216.0);
@@ -164,7 +148,7 @@ GrassVertex ribbonVertex(Blade blade, uint localIndex) {
 
 GrassVertex grass_vs(uint vertex : SV_VertexID, uint instance : SV_InstanceID) {
     Blade blade;
-    if (growBlade(patches[instance], vertex / VERTICES_PER_BLADE, blade)) {
+    if (growBlade(patches[patchBase + instance], vertex / VERTICES_PER_BLADE, blade)) {
         return ribbonVertex(blade, vertex % VERTICES_PER_BLADE);
     }
     // The instanced path shares a fixed index buffer, so reject the whole blade at the near plane.
@@ -181,7 +165,11 @@ groupshared uint acceptedMask;
 void grass_ms(uint3 group : SV_GroupID, uint lane : SV_GroupIndex,
               out vertices GrassVertex vertices[MAX_BLADES * VERTICES_PER_BLADE],
               out indices uint3 triangles[MAX_BLADES * TRIANGLES_PER_BLADE]) {
-    Patch patch = patches[group.x];
+    uint patchIndex = group.y * MESH_GROUPS_X + group.x;
+    Patch patch = (Patch)0;
+    if (patchIndex < grassDrawData.Load(0)) {
+        patch = patches[patchIndex];
+    }
     uint candidates = uint(ceil(patch.bladeCount));
     if (lane == 0) acceptedMask = 0;
     GroupMemoryBarrierWithGroupSync();

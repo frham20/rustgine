@@ -25,6 +25,7 @@ impl RenderScene {
     pub(super) unsafe fn new(
         device: &ID3D12Device,
         list: &ID3D12GraphicsCommandList,
+        graphics_root: &ID3D12RootSignature,
         pipelines: ScenePipelines,
         frame_count: usize,
         full_density: bool,
@@ -36,7 +37,7 @@ impl RenderScene {
         println!("Terrain: {side} m x {side} m, {samples} x {samples} height samples.");
         let grass = pipelines
             .grass
-            .map(|pso| Grass::new(device, list, pso, frame_count, full_density))
+            .map(|pso| Grass::new(device, graphics_root, pso, frame_count, full_density))
             .transpose()?;
         let mesh = cube_geometry();
         let geometry = upload_to_gpu(

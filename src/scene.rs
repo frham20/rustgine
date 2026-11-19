@@ -148,10 +148,6 @@ impl Frame {
         }
     }
 
-    pub fn view_projection(&self) -> Mat4 {
-        Mat4::from_cols_array(&self.view_projection)
-    }
-
     pub fn pixels_at_one_meter(&self) -> f32 {
         self.terrain_params[2]
     }

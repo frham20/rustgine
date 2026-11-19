@@ -221,7 +221,7 @@ impl Terrain {
         })
     }
 
-    // Used for conservative grass culling. The shader places roots on the active LOD.
+    // The cube is anchored to the heightfield at the origin.
     pub fn approximate_height(&self, xz: glam::Vec2) -> f32 {
         let p = (xz / GRID_STEP + glam::Vec2::splat(GRID_CELLS as f32 * 0.5))
             .clamp(glam::Vec2::ZERO, glam::Vec2::splat(GRID_CELLS as f32));
@@ -235,6 +235,10 @@ impl Terrain {
         let a = h[i] + u * (h[i + 1] - h[i]);
         let b = h[i + stride] + u * (h[i + stride + 1] - h[i + stride]);
         a + v * (b - a)
+    }
+
+    pub unsafe fn bind_base_samples(&self, list: &ID3D12GraphicsCommandList, root: u32) {
+        list.SetComputeRootShaderResourceView(root, self.base_vertices.GetGPUVirtualAddress());
     }
 
     // A single ordered direct queue owns the persistent pool and its reduction tree.

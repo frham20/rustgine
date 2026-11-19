@@ -23,6 +23,9 @@ macro_rules! shader {
 }
 pub(crate) use shader;
 pub const TERRAIN_TEXTURES_ROOT: u32 = 8;
+pub const GRASS_PATCHES_ROOT: u32 = 4;
+pub const GRASS_BASE_ROOT: u32 = 9;
+pub const GRASS_STATS_ROOT: u32 = 10;
 
 pub fn root_descriptor(kind: D3D12_ROOT_PARAMETER_TYPE, register: u32) -> D3D12_ROOT_PARAMETER {
     D3D12_ROOT_PARAMETER {
@@ -89,6 +92,20 @@ unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
     params.push(table(2));
     debug_assert_eq!(params.len() as u32, TERRAIN_TEXTURES_ROOT);
     params.push(table(3));
+    debug_assert_eq!(params.len() as u32, GRASS_BASE_ROOT);
+    params.push(D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Constants: D3D12_ROOT_CONSTANTS {
+                ShaderRegister: 2,
+                RegisterSpace: 0,
+                Num32BitValues: 1,
+            },
+        },
+    });
+    debug_assert_eq!(params.len() as u32, GRASS_STATS_ROOT);
+    params.push(root_descriptor(D3D12_ROOT_PARAMETER_TYPE_SRV, 13));
     let shadow_sampler = D3D12_STATIC_SAMPLER_DESC {
         Filter: D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
