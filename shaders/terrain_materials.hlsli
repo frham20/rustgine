@@ -40,6 +40,24 @@ float3 meadowCanopyColor(float variation) {
     return meadowBladeColor(lerp(0.25, 0.75, variation)) * 0.68;
 }
 
+float3 tintMeadow(float3 base, float3 scale) {
+    [branch] if (all(scale == 1.0)) return base;
+
+    const float3 luma = float3(0.2126, 0.7152, 0.0722);
+    float luminance = dot(base, luma);
+    float3 tinted = base * scale;
+    float tintedLuminance = dot(tinted, luma);
+    if (tintedLuminance <= 0.0) return luminance.xxx;
+
+    tinted *= luminance / tintedLuminance;
+    float peak = max(tinted.r, max(tinted.g, tinted.b));
+    // Reduce saturation at constant luminance if a channel would clip in the G-buffer.
+    if (peak > 1.0) {
+        tinted = lerp(luminance.xxx, tinted, (1.0 - luminance) / (peak - luminance));
+    }
+    return tinted;
+}
+
 TerrainMaterials terrainMaterials(float3 world, float3 normal) {
     TerrainMaterials material;
     float2 xz = world.xz;

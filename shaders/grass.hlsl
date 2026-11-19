@@ -215,5 +215,5 @@ GBuffer grass_ps(GrassVertex input, bool front : SV_IsFrontFace) {
     if (input.groundBlend > 0.0) {
         base = lerp(base, meadowCanopyColor(meadowVariation(input.world.xz)), input.groundBlend);
     }
-    return materialSample(base * grassParams.yzw, normal, 0, 0.96, MATERIAL_MATTE_GROUND);
+    return materialSample(tintMeadow(base, grassParams.yzw), normal, 0, 0.96, MATERIAL_MATTE_GROUND);
 }

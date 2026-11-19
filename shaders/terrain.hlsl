@@ -52,16 +52,6 @@ GBuffer terrain_ps(TerrainVertex input) {
     TerrainMaterials material = terrainMaterials(input.world, n);
 
     float3 base = 0;
-    if (material.meadow > 0.0) {
-        float variation = meadowVariation(xz);
-        float dry = 0.55 * (1.0 - material.moisture) + 1.3 * variation - 0.30;
-        float3 meadow = sampleFamily(0, dry, 2.0, xz, dx, dy);
-        // Give the surface the same meadow palette as the blades as their coverage thins.
-        float distanceBlend = smoothstep(8.0, 38.0, distance(camera.xyz, input.world));
-        float canopy = meadowCoverage(material);
-        float3 canopyColor = meadowCanopyColor(variation);
-        base += material.meadow * lerp(meadow, canopyColor, 0.58 * distanceBlend * canopy) * grassParams.yzw;
-    }
     if (material.organic > 0.0) {
         float variation = mottling(xz * 0.069 + float2(75, 29));
         float litter = 1.45 * variation + 0.45 * (1.0 - material.moisture) - 0.25;
@@ -78,7 +68,19 @@ GBuffer terrain_ps(TerrainVertex input) {
     }
 
     // Retain broad color variation past the distance where the texture mips average out.
-    base *= lerp(0.78, 1.12, mottling(xz * 0.007 + 7));
+    float broadVariation = lerp(0.78, 1.12, mottling(xz * 0.007 + 7));
+    base *= broadVariation;
+    if (material.meadow > 0.0) {
+        float variation = meadowVariation(xz);
+        float dry = 0.55 * (1.0 - material.moisture) + 1.3 * variation - 0.30;
+        float3 meadow = sampleFamily(0, dry, 2.0, xz, dx, dy);
+        // Give the surface the same meadow palette as the blades as their coverage thins.
+        float distanceBlend = smoothstep(8.0, 38.0, distance(camera.xyz, input.world));
+        float canopy = meadowCoverage(material);
+        float3 canopyColor = meadowCanopyColor(variation);
+        float3 meadowBase = lerp(meadow, canopyColor, 0.58 * distanceBlend * canopy) * broadVariation;
+        base += material.meadow * tintMeadow(meadowBase, grassParams.yzw);
+    }
     float roughness = dot(float4(material.meadow, material.organic, material.mineral, material.rock),
                           float4(0.97, 0.98, 0.94, 0.91));
     return materialSample(base, n, 0, roughness, MATERIAL_MATTE_GROUND);
