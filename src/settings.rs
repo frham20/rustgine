@@ -1,5 +1,6 @@
 use crate::{
     camera::Camera,
+    fps::{DEFAULT_FPS_LIMIT, MAX_FPS_LIMIT, MIN_FPS_LIMIT},
     grass::{GrassSettings, MAX_DENSITY_PERCENT, MAX_DRAW_DISTANCE, MIN_DRAW_DISTANCE},
     renderer::{Renderer, SHADOW_MAP_SIZES},
     scene::Animation,
@@ -139,6 +140,7 @@ fn panel_key(key: VIRTUAL_KEY) -> Option<Key> {
 pub struct SettingsPanel {
     pub context: Context,
     shadow_resize_failed: bool,
+    max_fps: u32,
 }
 
 impl SettingsPanel {
@@ -154,7 +156,12 @@ impl SettingsPanel {
         Self {
             context,
             shadow_resize_failed: false,
+            max_fps: DEFAULT_FPS_LIMIT,
         }
+    }
+
+    pub fn max_fps(&self) -> u32 {
+        self.max_fps
     }
 
     pub fn frame(
@@ -190,7 +197,7 @@ impl SettingsPanel {
                 let _width = ui.push_item_width(198.0);
                 if let Some(_tabs) = ui.tab_bar("Settings sections") {
                     if let Some(_scene) = ui.tab_item("Scene") {
-                        scene_settings(ui, animation, camera, &mut shadow_size);
+                        scene_settings(ui, animation, camera, &mut shadow_size, &mut self.max_fps);
                         if self.shadow_resize_failed {
                             ui.text_wrapped("Could not allocate the selected shadow map.");
                         }
@@ -215,7 +222,13 @@ impl SettingsPanel {
     }
 }
 
-fn scene_settings(ui: &Ui, animation: &mut Animation, camera: &mut Camera, shadow_size: &mut u32) {
+fn scene_settings(
+    ui: &Ui,
+    animation: &mut Animation,
+    camera: &mut Camera,
+    shadow_size: &mut u32,
+    max_fps: &mut u32,
+) {
     ui.text("Atmosphere");
     ui.separator();
     let mut minutes = animation.day_minutes() as i32;
@@ -232,6 +245,10 @@ fn scene_settings(ui: &Ui, animation: &mut Animation, camera: &mut Camera, shado
     ui.spacing();
     ui.text("Rendering");
     ui.separator();
+    ui.slider_config("Max FPS", MIN_FPS_LIMIT, MAX_FPS_LIMIT)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .display_format("%u FPS")
+        .build(max_fps);
     let mut scene_km = camera.draw_distance / 1000.0;
     if ui
         .slider_config("Scene draw distance", 0.1, 18.0)

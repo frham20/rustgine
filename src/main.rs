@@ -359,7 +359,7 @@ unsafe fn run(options: &Options) -> AppResult<()> {
             return Ok(());
         }
         if options.capture.is_none() {
-            pace_frame(now);
+            pace_frame(now, panel.max_fps());
         }
         frame += 1u64;
     }

@@ -1,15 +1,19 @@
 use std::time::{Duration, Instant};
 
-pub fn pace_frame(start: Instant) {
-    const FRAME_TIME: Duration = Duration::from_nanos(1_000_000_000_u64.div_ceil(300));
+pub const MIN_FPS_LIMIT: u32 = 30;
+pub const MAX_FPS_LIMIT: u32 = 2_000;
+pub const DEFAULT_FPS_LIMIT: u32 = 300;
+
+pub fn pace_frame(start: Instant, max_fps: u32) {
     const SPIN_MARGIN: Duration = Duration::from_micros(150);
+    let frame_time = Duration::from_nanos(1_000_000_000_u64.div_ceil(u64::from(max_fps)));
 
     // Sleep for most of the remaining budget, then finish the short wait at clock precision.
-    let remaining = FRAME_TIME.saturating_sub(start.elapsed());
+    let remaining = frame_time.saturating_sub(start.elapsed());
     if remaining > SPIN_MARGIN {
         std::thread::sleep(remaining - SPIN_MARGIN);
     }
-    while start.elapsed() < FRAME_TIME {
+    while start.elapsed() < frame_time {
         std::hint::spin_loop();
     }
 }
