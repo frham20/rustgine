@@ -16,6 +16,7 @@ const MINUTES_PER_DAY: f64 = 24.0 * 60.0;
 pub struct Animation {
     angle: f64,
     wind_time: f64,
+    cloud_wind: f64,
     day_minutes: f64,
     time_of_day_running: bool,
 }
@@ -25,6 +26,7 @@ impl Animation {
         Self {
             angle: (0.22 + time * ROTATION_SPEED).rem_euclid(TAU),
             wind_time: time.rem_euclid(WIND_PERIOD),
+            cloud_wind: (time * 0.001).rem_euclid(2.0),
             day_minutes: MINUTES_PER_DAY / 2.0,
             time_of_day_running: false,
         }
@@ -33,6 +35,7 @@ impl Animation {
     pub fn advance(&mut self, seconds: f64) {
         self.angle = (self.angle + seconds * ROTATION_SPEED).rem_euclid(TAU);
         self.wind_time = (self.wind_time + seconds).rem_euclid(WIND_PERIOD);
+        self.cloud_wind = (self.cloud_wind + seconds * 0.001).rem_euclid(2.0);
     }
 
     pub fn toggle_time_of_day(&mut self) {
@@ -143,7 +146,12 @@ impl Frame {
             ],
             terrain_grid: terrain::GRID,
             fps_hud: [0; 4],
-            depth_projection: [projection.z_axis.z, projection.w_axis.z, 0.0, 0.0],
+            depth_projection: [
+                projection.z_axis.z,
+                projection.w_axis.z,
+                animation.cloud_wind as f32,
+                0.0,
+            ],
             terrain_frustum: frustum_planes(view_projection).map(|plane| plane.to_array()),
         }
     }

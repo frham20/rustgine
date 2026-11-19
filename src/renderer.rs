@@ -1,3 +1,4 @@
+mod cloud_noise;
 mod imgui;
 mod scene;
 mod terrain_textures;
@@ -31,6 +32,7 @@ use windows::{
 const BUFFER_COUNT: usize = 2;
 const COLOR_RTV: usize = BUFFER_COUNT;
 const GBUFFER_RTV: usize = COLOR_RTV + 1;
+const CLOUD_RTV: usize = GBUFFER_RTV + GBUFFER_FORMATS.len();
 const DEPTH_DSV: usize = 0;
 const SHADOW_DSV: usize = 1;
 const COLOR_SRV: usize = 0;
@@ -39,6 +41,8 @@ const GBUFFER_SRV: usize = SHADOW_SRV + 1;
 const DEPTH_SRV: usize = GBUFFER_SRV + GBUFFER_FORMATS.len();
 const TERRAIN_TEXTURES_SRV: usize = DEPTH_SRV + 1;
 const IMGUI_FONT_SRV: usize = TERRAIN_TEXTURES_SRV + 1;
+const CLOUD_NOISE_SRV: usize = IMGUI_FONT_SRV + 1;
+const CLOUD_SRV: usize = CLOUD_NOISE_SRV + 1;
 pub const SHADOW_MAP_SIZES: [(u32, &str); 4] = [
     (512, "512 x 512"),
     (1024, "1024 x 1024"),
@@ -81,6 +85,7 @@ pub struct Hud<'a> {
 }
 
 struct Targets {
+    clouds: ID3D12Resource,
     back: Vec<ID3D12Resource>,
     color: ID3D12Resource,
     gbuffer: Vec<ID3D12Resource>,
@@ -123,6 +128,20 @@ impl Targets {
         )?;
         device.CreateRenderTargetView(&color, None, rtv.cpu(COLOR_RTV));
         device.CreateShaderResourceView(&color, None, srv.cpu(COLOR_SRV));
+        let clouds = resource(
+            device,
+            D3D12_HEAP_TYPE_DEFAULT,
+            &texture(
+                width.div_ceil(4),
+                height.div_ceil(4),
+                SCENE_FORMAT,
+                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+            ),
+            SAMPLE_STATE,
+            None,
+        )?;
+        device.CreateRenderTargetView(&clouds, None, rtv.cpu(CLOUD_RTV));
+        device.CreateShaderResourceView(&clouds, None, srv.cpu(CLOUD_SRV));
         let mut gbuffer = Vec::with_capacity(GBUFFER_FORMATS.len());
         for (i, format) in GBUFFER_FORMATS.into_iter().enumerate() {
             let attachment = resource(
@@ -158,6 +177,7 @@ impl Targets {
         )?;
         create_depth_views(device, &depth, dsv.cpu(DEPTH_DSV), srv.cpu(DEPTH_SRV));
         Ok(Self {
+            clouds,
             back,
             color,
             gbuffer,
@@ -231,6 +251,7 @@ pub struct Renderer {
     shadow_size: u32,
     overlay: Overlay,
     _terrain_textures: ID3D12Resource,
+    _cloud_noise: ID3D12Resource,
     pipes: Pipelines,
     scene: RenderScene,
     width: u32,
@@ -290,13 +311,13 @@ impl Renderer {
         let rtv = Descriptors::new(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-            (GBUFFER_RTV + GBUFFER_FORMATS.len()) as u32,
+            CLOUD_RTV as u32 + 1,
         )?;
         let dsv = Descriptors::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 2)?;
         let srv = Descriptors::new(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-            IMGUI_FONT_SRV as u32 + 1,
+            CLOUD_SRV as u32 + 1,
         )?;
         let mut slots = Vec::new();
         let bytes = size_of::<Frame>()
@@ -323,6 +344,7 @@ impl Renderer {
         )?;
         let (pipes, scene_pipelines) = Pipelines::new(&device, grass_path)?;
         let mut staging = Vec::new();
+        let noise = cloud_noise::load(&device, &list, srv.cpu(CLOUD_NOISE_SRV), &mut staging)?;
         let terrain_textures =
             terrain_textures::load(&device, &list, srv.cpu(TERRAIN_TEXTURES_SRV), &mut staging)?;
         let scene = RenderScene::new(
@@ -373,6 +395,7 @@ impl Renderer {
             shadow_size: DEFAULT_SHADOW_SIZE,
             overlay,
             _terrain_textures: terrain_textures,
+            _cloud_noise: noise,
             pipes,
             scene,
             width: 0,
@@ -494,6 +517,29 @@ impl Renderer {
         );
     }
 
+    unsafe fn cloud_pass(&self, targets: &Targets) {
+        let list = &self.list;
+        transition(
+            list,
+            &targets.clouds,
+            SAMPLE_STATE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        );
+        list.OMSetRenderTargets(1, Some(&self.rtv.cpu(CLOUD_RTV)), false, None);
+        self.viewport(self.width.div_ceil(4), self.height.div_ceil(4));
+        list.SetGraphicsRootDescriptorTable(TERRAIN_TEXTURES_ROOT, self.srv.gpu(CLOUD_NOISE_SRV));
+        list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        list.SetPipelineState(&self.pipes.clouds);
+        list.DrawInstanced(3, 1, 0, 0);
+        transition(
+            list,
+            &targets.clouds,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            SAMPLE_STATE,
+        );
+        self.viewport(self.width, self.height);
+    }
+
     unsafe fn lighting_pass(&self, targets: &Targets) {
         let list = &self.list;
         list.OMSetRenderTargets(1, Some(&self.rtv.cpu(COLOR_RTV)), false, None);
@@ -513,6 +559,7 @@ impl Renderer {
         );
         list.SetGraphicsRootDescriptorTable(3, self.srv.gpu(SHADOW_SRV));
         list.SetGraphicsRootDescriptorTable(7, self.srv.gpu(GBUFFER_SRV));
+        list.SetGraphicsRootDescriptorTable(2, self.srv.gpu(CLOUD_SRV));
         list.SetPipelineState(&self.pipes.lighting);
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list.DrawInstanced(3, 1, 0, 0);
@@ -579,6 +626,12 @@ impl Renderer {
         }
         if let Some(timer) = timer {
             timer.mark(list, GpuMark::GeometryReady);
+        }
+        if mode != RenderMode::WireframeOnly {
+            self.cloud_pass(targets);
+        }
+        if let Some(timer) = timer {
+            timer.mark(list, GpuMark::CloudsReady);
         }
         if mode != RenderMode::WireframeOnly {
             self.lighting_pass(targets);
@@ -784,9 +837,10 @@ impl Renderer {
                 path.display()
             );
             if let Some(timer) = timer {
-                let [prepare, grass_generate, shadows, surfaces, grass_ms, resolve, output] =
+                let [prepare, grass_generate, shadows, surfaces, grass_ms, clouds, resolve, output] =
                     timer.pass_milliseconds(self.queue.GetTimestampFrequency()?)?;
-                let scene_ms = prepare + grass_generate + shadows + surfaces + grass_ms + resolve;
+                let scene_ms =
+                    prepare + grass_generate + shadows + surfaces + grass_ms + clouds + resolve;
                 let triangles = readback_u32(&terrain_count)?;
                 println!("Terrain: {triangles} active triangles.");
                 let (patches, blades_triangles) = grass_counts
@@ -804,7 +858,7 @@ impl Renderer {
                     RenderMode::WireframeOnly => "wireframe",
                 };
                 println!(", {grass_ms:.3} ms grass geometry.");
-                println!("GPU passes (ms): terrain {prepare:.3}, grass generation {grass_generate:.3}, shadows {shadows:.3}, surfaces {surfaces:.3}, grass {grass_ms:.3}, {resolve_label} {resolve:.3}, output {output:.3}, total {:.3}.", scene_ms + output);
+                println!("GPU passes (ms): terrain {prepare:.3}, grass generation {grass_generate:.3}, shadows {shadows:.3}, surfaces {surfaces:.3}, grass {grass_ms:.3}, clouds {clouds:.3}, {resolve_label} {resolve:.3}, output {output:.3}, total {:.3}.", scene_ms + output);
             }
         }
         self.check_debug()?;

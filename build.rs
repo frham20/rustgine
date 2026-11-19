@@ -64,10 +64,11 @@ fn main() {
         ("terrain_vs", "vs_6_0"),
         ("terrain_ps", "ps_6_0"),
         ("deferred_ps", "ps_6_0"),
+        ("clouds_ps", "ps_6_0"),
         ("imgui_vs", "vs_6_0"),
         ("imgui_ps", "ps_6_0"),
     ] {
-        let source = if entry == "deferred_ps" {
+        let source = if matches!(entry, "deferred_ps" | "clouds_ps") {
             "shaders/deferred.hlsl"
         } else if entry.starts_with("imgui_") {
             "shaders/imgui.hlsl"

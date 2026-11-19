@@ -21,6 +21,7 @@ pub enum GpuMark {
     ShadowsReady,
     SurfacesReady,
     GeometryReady,
+    CloudsReady,
     SceneReady,
     OutputReady,
 }
@@ -67,7 +68,7 @@ impl SceneTimer {
     }
 
     // Read after waiting for the capture fence.
-    pub unsafe fn pass_milliseconds(&self, ticks_per_second: u64) -> Result<[f64; 7]> {
+    pub unsafe fn pass_milliseconds(&self, ticks_per_second: u64) -> Result<[f64; 8]> {
         let mut mapped = ptr::null_mut();
         self.readback.Map(
             0,

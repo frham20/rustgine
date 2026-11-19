@@ -129,7 +129,13 @@ unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
         ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
         ..Default::default()
     };
-    let samplers = [shadow_sampler, terrain_sampler];
+    let cloud_sampler = D3D12_STATIC_SAMPLER_DESC {
+        Filter: D3D12_FILTER_MIN_MAG_MIP_LINEAR,
+        ShaderRegister: 2,
+        MaxAnisotropy: 1,
+        ..terrain_sampler
+    };
+    let samplers = [shadow_sampler, terrain_sampler, cloud_sampler];
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: params.len() as u32,
         pParameters: params.as_ptr(),
@@ -214,6 +220,7 @@ pub struct Pipelines {
     pub sdr: ID3D12PipelineState,
     pub hdr: ID3D12PipelineState,
     pub lighting: ID3D12PipelineState,
+    pub clouds: ID3D12PipelineState,
 }
 
 pub struct ScenePipelines {
@@ -434,12 +441,19 @@ impl Pipelines {
             shader!("deferred_ps"),
             false,
         )?;
+        let clouds = graphics(
+            states(false, false, SCENE_FORMAT),
+            shader!("output_vs"),
+            shader!("clouds_ps"),
+            false,
+        )?;
         Ok((
             Self {
                 root,
                 sdr,
                 hdr,
                 lighting,
+                clouds,
             },
             scene_pipelines,
         ))

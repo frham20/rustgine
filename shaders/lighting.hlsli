@@ -10,6 +10,7 @@ cbuffer Frame : register(b0) {
     uint4 terrainGrid; // Grid cells per side, root count, nodes per root and pool capacity.
     uint4 fpsHud; // Glyph pixel scale (zero hides the HUD), then eight packed glyph indices.
     float2 depthProjection; // Perspective matrix Z coefficients for reconstructing view depth.
+    float cloudWind; // Wrapped horizontal displacement in cloud texture coordinates.
     float4 terrainFrustum[6]; // World-space inward planes for terrain LOD selection.
 };
 Texture2D<float> shadowDepth : register(t1);
