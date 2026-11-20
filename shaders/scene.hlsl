@@ -1,29 +1,6 @@
 #include "lighting.hlsli"
-#include "gbuffer.hlsli"
 
 Texture2D<float4> sceneColor : register(t0);
-
-struct Vertex { float3 position : POSITION; float3 normal : NORMAL; };
-struct Surface {
-    float4 position : SV_Position;
-    float3 normal : NORMAL;
-};
-
-Surface scene_vs(Vertex input) {
-    Surface o;
-    float4 p = mul(model, float4(input.position, 1));
-    o.position = mul(viewProjection, p);
-    o.normal = mul((float3x3)model, input.normal);
-    return o;
-}
-
-float4 shadow_vs(Vertex input) : SV_Position {
-    return mul(lightProjection[shadowSlice], mul(model, float4(input.position, 1)));
-}
-
-GBuffer scene_ps(Surface input) {
-    return materialSample(float3(0.026, 0.29, 0.255), input.normal, 0.62, 0.25, MATERIAL_STANDARD);
-}
 
 float4 wireframe_ps() : SV_Target {
     return float4(0.017, 0.125, 0.185, 0.76);

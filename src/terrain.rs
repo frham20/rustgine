@@ -16,7 +16,7 @@ use windows::{
     },
 };
 
-pub use heightfield::{origin_height, GRID_STEP, MAX_DEPTH, SIDE_METERS};
+pub use heightfield::{GRID_STEP, MAX_DEPTH, SIDE_METERS};
 
 const UPDATE_THREADS: u32 = 128;
 const REDUCE_THREADS: u32 = 64;
@@ -192,10 +192,9 @@ impl Terrain {
     pub unsafe fn new(
         device: &ID3D12Device,
         list: &ID3D12GraphicsCommandList,
-        alpine: bool,
         staging: &mut Vec<ID3D12Resource>,
     ) -> Result<Self> {
-        let field = Heightfield::generate(alpine);
+        let field = Heightfield::generate();
         let nodes = upload_to_gpu(device, list, &field.nodes, SRV, staging)?;
         let base_vertices = upload_to_gpu(device, list, &field.vertices(), SRV, staging)?;
         let storage = |bytes| {
@@ -231,7 +230,6 @@ impl Terrain {
         })
     }
 
-    // The cube is anchored to the heightfield at the origin.
     pub fn approximate_height(&self, xz: glam::Vec2) -> f32 {
         let p = (xz / GRID_STEP + glam::Vec2::splat(GRID_CELLS as f32 * 0.5))
             .clamp(glam::Vec2::ZERO, glam::Vec2::splat(GRID_CELLS as f32));
@@ -610,15 +608,15 @@ mod tests {
             let list: ID3D12GraphicsCommandList =
                 device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?;
             let mut staging = Vec::new();
-            let mut terrain = Terrain::new(&device, &list, false, &mut staging)?;
-            let mut near = Camera::default();
+            let mut terrain = Terrain::new(&device, &list, &mut staging)?;
+            let mut near = Camera::alpine_overlook();
             near.eye = glam::vec3(-250.0, 525.0, 2030.0);
-            let mut turned = Camera::default();
+            let mut turned = Camera::alpine_overlook();
             turned.eye = near.eye;
             turned.update(glam::Vec2::ZERO, glam::vec2(1256.637, 0.0), 0.0, false);
-            let mut far = Camera::default();
+            let mut far = Camera::alpine_overlook();
             far.eye.y = 2_000_000.0;
-            let field = Heightfield::generate(false);
+            let field = Heightfield::generate();
             let mut timeline = Timeline::new(&device)?;
             let mut feedback = [LodFeedback::new(&device)?, LodFeedback::new(&device)?];
             let mut slot = 0;
@@ -637,15 +635,7 @@ mod tests {
                     D3D12_HEAP_TYPE_UPLOAD,
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                 )?;
-                let frame = Frame::new(
-                    viewport,
-                    camera,
-                    Animation::new(0.0),
-                    0.0,
-                    false,
-                    80.0,
-                    origin_height(),
-                );
+                let frame = Frame::new(viewport, camera, Animation::new(0.0), 0.0, false, 80.0);
                 let view = frame.terrain_lod_view();
                 upload(&constants, &[frame])?;
                 for _ in 0..2 * MAX_DEPTH {

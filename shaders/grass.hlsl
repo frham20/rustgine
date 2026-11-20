@@ -52,7 +52,7 @@ bool growBlade(Patch patch, uint bladeIndex, out Blade blade) {
     // Thin the blades across mixed materials using a seed that stays fixed as the camera moves.
     float3 groundNormal = normalize(ground.yzw);
     float coverage = meadowCoverage(terrainMaterials(blade.root, groundNormal, 0));
-    if (lakeLevel > 0 && coverage > 0) {
+    if (coverage > 0) {
         // Grass roots stay fixed to the local basin, independently of camera LOD.
         float2 mask = landforms.SampleLevel(landformSampler, float3(root / 5000 + 0.5, 0), 0).rg;
         float2 deposit = alpineDeposits(blade.root, groundNormal, mask, 0);

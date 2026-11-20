@@ -5,9 +5,6 @@ use crate::{
 use glam::{Mat4, Vec3};
 use std::f64::consts::TAU;
 
-const CUBE_HALF_SIZE: f32 = 1.0;
-const CUBE_CLEARANCE: f32 = 2.0;
-const ROTATION_SPEED: f64 = 0.55;
 // Both wind oscillations in grass.hlsl repeat at this period.
 const WIND_PERIOD: f64 = TAU / 0.65;
 const MINUTES_PER_DAY: f64 = 24.0 * 60.0;
@@ -34,26 +31,14 @@ impl Default for CloudQuality {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct SceneOptions {
-    pub alpine: bool,
     pub grass_path: crate::grass::GrassPath,
     pub grass_full_density: bool,
 }
 
-impl Default for SceneOptions {
-    fn default() -> Self {
-        Self {
-            alpine: true,
-            grass_path: Default::default(),
-            grass_full_density: false,
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub struct Animation {
-    angle: f64,
     wind_time: f64,
     cloud_wind: f64,
     day_minutes: f64,
@@ -63,7 +48,6 @@ pub struct Animation {
 impl Animation {
     pub fn new(time: f64) -> Self {
         Self {
-            angle: (0.22 + time * ROTATION_SPEED).rem_euclid(TAU),
             wind_time: time.rem_euclid(WIND_PERIOD),
             cloud_wind: (time * 0.001).rem_euclid(2.0),
             day_minutes: MINUTES_PER_DAY / 2.0,
@@ -72,7 +56,6 @@ impl Animation {
     }
 
     pub fn advance(&mut self, seconds: f64) {
-        self.angle = (self.angle + seconds * ROTATION_SPEED).rem_euclid(TAU);
         self.wind_time = (self.wind_time + seconds).rem_euclid(WIND_PERIOD);
         self.cloud_wind = (self.cloud_wind + seconds * 0.001).rem_euclid(2.0);
     }
@@ -128,7 +111,6 @@ pub struct Vertex {
 #[repr(C)]
 pub struct Frame {
     pub view_projection: [f32; 16],
-    pub model: [f32; 16],
     pub light_projection: [[f32; 16]; SHADOW_CASCADES],
     pub camera: [f32; 4],
     pub sun: [f32; 4],
@@ -157,7 +139,6 @@ impl Frame {
         exposure_ev: f32,
         hdr: bool,
         peak_nits: f32,
-        ground: f32,
     ) -> Self {
         let aspect = width as f32 / height as f32;
         // Reverse camera depth so D32_FLOAT keeps enough precision for world-space
@@ -170,17 +151,9 @@ impl Frame {
         );
         let view_projection = projection * camera.view();
         let sun = animation.sun_direction();
-        // Keep enough shadow texels across the two-metre cube in the near view.
-        let extent = (camera.eye.y - ground).abs().clamp(32.0, 3_850.0);
-        let light_view = Mat4::look_at_rh(camera.eye + sun * (3.0 * extent), camera.eye, Vec3::Y);
-        let light_projection =
-            Mat4::orthographic_rh(-extent, extent, -extent, extent, 0.1, 6.0 * extent);
-        let model = Mat4::from_translation(Vec3::Y * (ground + CUBE_CLEARANCE + CUBE_HALF_SIZE))
-            * Mat4::from_rotation_y(animation.angle as f32);
         Self {
             view_projection: view_projection.to_cols_array(),
-            model: model.to_cols_array(),
-            light_projection: [(light_projection * light_view).to_cols_array(); SHADOW_CASCADES],
+            light_projection: [[0.0; 16]; SHADOW_CASCADES],
             camera: camera.eye.extend(1.0).to_array(),
             sun: sun.extend(5.0).to_array(),
             grass: [animation.wind_time as f32, 1.0, 1.0, 1.0],
@@ -197,7 +170,7 @@ impl Frame {
                 projection.z_axis.z,
                 projection.w_axis.z,
                 animation.cloud_wind as f32,
-                -1.0e6,
+                terrain::alpine::LAKE_LEVEL,
             ],
             terrain_frustum: frustum_planes(view_projection).map(|plane| plane.to_array()),
             shadow_ranges: [0.0; SHADOW_CASCADES],
@@ -210,7 +183,6 @@ impl Frame {
     }
 
     pub fn configure_alpine(&mut self, camera: &Camera, shadow_size: u32) {
-        self.depth_projection[3] = terrain::alpine::LAKE_LEVEL;
         let far = camera.draw_distance;
         self.shadow_ranges = [
             (0.20 * far).min(120.0),
@@ -255,38 +227,6 @@ impl Frame {
     }
 }
 
-// Tessellate only the narrow bevels. The central quad of each face stays flat.
-pub fn cube_geometry() -> Vec<Vertex> {
-    let mut vertices = Vec::new();
-    let axes = [
-        (Vec3::X, -Vec3::Z, Vec3::Y),
-        (-Vec3::X, Vec3::Z, Vec3::Y),
-        (Vec3::Y, Vec3::X, -Vec3::Z),
-        (-Vec3::Y, Vec3::X, Vec3::Z),
-        (Vec3::Z, Vec3::X, Vec3::Y),
-        (-Vec3::Z, -Vec3::X, Vec3::Y),
-    ];
-    let radius = 0.055;
-    let inner = 1.0 - radius;
-    let t = [-1.0, -0.98, -0.96, -inner, inner, 0.96, 0.98, 1.0];
-    for (face, u, v) in axes {
-        for x in t.windows(2) {
-            for y in t.windows(2) {
-                for (i, j) in [(0, 0), (1, 0), (1, 1), (0, 0), (1, 1), (0, 1)] {
-                    let p = face + u * x[i] + v * y[j];
-                    let core = p.clamp(Vec3::splat(-inner), Vec3::splat(inner));
-                    let normal = (p - core).normalize();
-                    vertices.push(Vertex {
-                        position: (CUBE_HALF_SIZE * (core + radius * normal)).to_array(),
-                        normal: normal.to_array(),
-                    });
-                }
-            }
-        }
-    }
-    vertices
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,15 +234,7 @@ mod tests {
     #[test]
     fn camera_depth_reconstructs_distant_shadow_receivers() {
         let camera = Camera::alpine_overlook();
-        let frame = Frame::new(
-            [1280, 720],
-            &camera,
-            Animation::new(0.0),
-            0.0,
-            false,
-            80.0,
-            0.0,
-        );
+        let frame = Frame::new([1280, 720], &camera, Animation::new(0.0), 0.0, false, 80.0);
         let projection = Mat4::from_cols_array(&frame.view_projection) * camera.view().inverse();
         for depth in [CAMERA_NEAR, 1.0, 1_000.0, 8_000.0, camera.draw_distance] {
             let clip = projection * Vec3::new(0.0, 0.0, -depth).extend(1.0);
@@ -327,15 +259,7 @@ mod tests {
         let mut camera = Camera::alpine_overlook();
         for far in [100.0, 18_000.0] {
             camera.draw_distance = far;
-            let mut frame = Frame::new(
-                [1280, 720],
-                &camera,
-                Animation::new(0.0),
-                0.0,
-                false,
-                80.0,
-                0.0,
-            );
+            let mut frame = Frame::new([1280, 720], &camera, Animation::new(0.0), 0.0, false, 80.0);
             frame.configure_alpine(&camera, 2048);
             assert_eq!(frame.shadow_ranges[3], far);
             assert!(frame.shadow_ranges.windows(2).all(|pair| pair[0] < pair[1]));
@@ -379,28 +303,5 @@ mod tests {
         animation.day_minutes = 1430.0;
         animation.step_time_of_day();
         assert_eq!(animation.day_minutes, 5.0);
-    }
-
-    #[test]
-    fn spinning_cube_bottom_stays_two_metres_above_its_terrain_anchor() {
-        let ground = terrain::origin_height();
-        let cube = cube_geometry();
-        for time in [0.0, 1.0, 3.0, 7.0] {
-            let frame = Frame::new(
-                [1280, 720],
-                &Camera::default(),
-                Animation::new(time),
-                0.0,
-                false,
-                80.0,
-                ground,
-            );
-            let model = Mat4::from_cols_array(&frame.model);
-            let bottom = cube
-                .iter()
-                .map(|v| model.transform_point3(v.position.into()).y)
-                .fold(f32::INFINITY, f32::min);
-            assert!((bottom - ground - 2.0).abs() < 1e-5);
-        }
     }
 }

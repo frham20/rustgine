@@ -1,6 +1,6 @@
 # Rustgine Â· Direct3D 12 engine plan
 
-Launch `target/release/rustgine.exe` for the alpine lake overlook. Use `--scene meadow` to explore the original 5 km × 5 km valley. A teal cube spins with its bottom face two metres above the ground at its centre. Wind-animated grass grows on the active terrain triangles around the camera. The scene uses linear floating-point lighting and the display’s SDR or HDR output transform.
+Launch `target/release/rustgine.exe` for the alpine lake overlook. Wind-animated grass grows on the active terrain triangles around the camera. The scene uses linear floating-point lighting and the display’s SDR or HDR output transform.
 
 The demo now includes procedural grass. The feature plan records how to select the render path, reproduce the captures, and verify the meadow. [Procedural grass implementation and verification](GRASS_RENDERING_PLAN.md)
 
@@ -23,7 +23,7 @@ cargo build --release --locked
 
 | Action | Control |
 | --- | --- |
-| Pause or resume the cube and wind | Space |
+| Pause or resume wind and cloud motion | Space |
 | Adjust exposure in quarter-stop increments | + or âˆ’ |
 | Fly forward, left, backward, or right | W, A, S, D |
 | Double flight speed while held | Shift |
@@ -36,13 +36,13 @@ cargo build --release --locked
 | Use the software adapter | `cargo run --locked -- --warp` |
 | Disable grass in the shared scene | `cargo run --locked -- --grass-path off` |
 | Fly over the 5 km Ã— 5 km terrain | `cargo run --release --locked -- --terrain` |
-| Save a repeatable SDR preview and measure scene-linear highlights | `cargo run --locked -- --scene meadow --time 0 --capture target/reference.ppm` |
+| Save a repeatable SDR preview and measure scene-linear highlights | `cargo run --locked -- --time 0 --capture target/reference.ppm` |
 
 ## Terrain scene
 
 The engine generates a deterministic 513 Ã— 513 heightfield with about 9.77 m between samples. The GPU updates a bounded pool of active longest-edge bisectors using a concurrent binary tree, then writes one index buffer for the color, shadow, depth and wireframe passes. Once the GPU confirms that no splits or merges occurred, the renderer reuses the mesh until the camera position or projected pixel scale changes. The GPU resolves T-junctions by interpolating fine vertices along the coarsest active edge that crosses them. The color pass, shadow map, wireframe and grass use the same resolved terrain geometry. [Benyoub and Dupuy, HPG 2024](https://arxiv.org/abs/2407.02215) Â· [Lee, 2026](https://www.mdpi.com/3042-6308/2/3/12)
 
-The fly camera starts beside the cube and moves at 50 km/h. Hold Shift to fly at 100 km/h. Add `--capture target/terrain.ppm` to save the initial view after refinement and report the active triangle count and GPU time for terrain preparation, shadows, opaque geometry, grass geometry, deferred lighting and the output transform. Capture timings exclude presentation and image readback.
+The fly camera starts at the alpine overlook and moves at 50 km/h. Hold Shift to fly at 100 km/h. Add `--capture target/terrain.ppm` to save the initial view after refinement and report the active triangle count and GPU time for terrain preparation, shadows, opaque geometry, grass geometry, deferred lighting and the output transform. Capture timings exclude presentation and image readback.
 
 ## Implementation milestones
 
@@ -67,8 +67,8 @@ The fly camera starts beside the cube and moves at 50 km/h. Hold Shift to fly at
 | `src/capture.rs`, `tests/desktop.rs` | Pitched GPU readback, RGB preview output, scene peak measurement, and desktop regression tests. |
 
 1. Acquire the current swap-chain index. Wait for that slot's fence value before resetting its allocator or writing its constant buffer.
-2. Draw the terrain and cube from the light into the shadow map. Transition the map from depth-write to pixel-shader input.
-3. Draw the terrain, cube and grass into two G-buffer targets with camera depth testing. One target stores sRGB albedo and metallic fraction. The other stores the octahedral world normal, roughness and a material class. The class distinguishes uncovered pixels, standard lighting and matte ground lighting.
+2. Draw the terrain, distant ridges, and conifers from the light into the shadow cascades. Transition the shadow maps from depth-write to pixel-shader input.
+3. Draw the terrain, lake, ridges, conifers, and grass into two G-buffer targets with camera depth testing. One target stores sRGB albedo and metallic fraction. The other stores the octahedral world normal, roughness and a material class. The class distinguishes uncovered pixels, standard lighting and matte ground lighting.
 4. Reconstruct world positions from camera depth and evaluate directional lighting, filtered shadows, environment light and atmospheric scattering in a full-screen pass into the FP16 scene target. Single Rayleigh scattering integrates wavelength-dependent sunlight through an exponential atmosphere. Uncovered pixels sample the sky, and covered pixels integrate only as far as the visible surface. Draw wireframe overlays against the geometry depth. Wireframe-only mode uses a depth prepass and skips lighting.
 5. Sample scene color in a full-screen triangle. Apply exposure, then the selected display transform. Return the back buffer to the present state, present it, and signal the slot's fence.
 
@@ -76,7 +76,7 @@ All passes share one ordered direct queue. Resize drains outstanding work, relea
 
 ## Verification baseline
 
-Run the desktop tests from an interactive Windows session. One opens and closes a window. The other uses WARP to compare GPU captures at two timestamps, check the cube color and tile contrast, and detect clipping in the lighting buffer.
+Run the desktop tests from an interactive Windows session. They exercise window lifecycle, settings, and WARP captures of alpine terrain, lake, forest, grass, and lighting.
 
 ```powershell
 cargo fmt --all -- --check

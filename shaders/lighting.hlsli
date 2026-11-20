@@ -1,6 +1,5 @@
 cbuffer Frame : register(b0) {
     column_major float4x4 viewProjection;
-    column_major float4x4 model;
     column_major float4x4 lightProjection[4];
     float4 camera;
     float4 sun;       // Surface-to-light direction and incident irradiance.
@@ -11,7 +10,7 @@ cbuffer Frame : register(b0) {
     uint4 fpsHud; // Glyph pixel scale (zero hides the HUD), then eight packed glyph indices.
     float2 depthProjection; // Perspective matrix Z coefficients for reconstructing view depth.
     float cloudWind; // Wrapped horizontal displacement in cloud texture coordinates.
-    float lakeLevel; // Metres; below the world in the meadow demo.
+    float lakeLevel; // Lake elevation in metres.
     float4 terrainFrustum[6]; // World-space inward planes for terrain LOD selection.
     float4 shadowRanges; // Outer radius of each alpine cascade, in metres.
     uint cloudRenderDivisor;
@@ -40,7 +39,6 @@ float sampleShadow(float3 world, uint slice, float bias) {
 }
 
 float visibility(float3 world, float3 n) {
-    if (lakeLevel < 0) return sampleShadow(world, 0, 0.00035);
     float range = distance(world, camera.xyz);
     if (range >= shadowRanges.w) return 1;
     uint slice = (uint)(range > shadowRanges.x) + (uint)(range > shadowRanges.y) + (uint)(range > shadowRanges.z);
@@ -67,7 +65,7 @@ float2 cloudShadowOrigin() {
 }
 
 float cloudVisibility(float3 world) {
-    if (cloudShadowSteps == 0 || lakeLevel < 0 || sun.y <= 0.025) return 1;
+    if (cloudShadowSteps == 0 || sun.y <= 0.025) return 1;
     uint w, h;
     cloudShadowMap.GetDimensions(w, h);
     float2 reference = world.xz - (world.y - lakeLevel) * sun.xz / max(sun.y, 0.025);

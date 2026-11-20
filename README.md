@@ -4,7 +4,7 @@ The default scene opens on a hillside above a winding alpine lake. It combines a
 
 Cliffs use triplanar limestone and shale with filtered detail normals. Sheltered gullies retain snow and loose scree collects below steep rock. Terrain textures use full mip chains and 16× anisotropic filtering. Distant stands blend into canopy cover as individual crowns shrink below a few pixels.
 
-Run `cargo run --release --locked` for the alpine overlook. Use `--scene meadow` for the original cube and grass demo. To capture the same alpine viewpoint and animation time, run `cargo run --release --locked -- --time 0 --capture target/alpine-overlook.ppm`.
+Run `cargo run --release --locked` for the alpine overlook. To capture the same alpine viewpoint and animation time, run `cargo run --release --locked -- --time 0 --capture target/alpine-overlook.ppm`.
 
 Press F5 and open **Clouds** to change sky resolution, ray samples, lighting samples, and alpine cloud shadow samples while the scene runs. Set either lighting or cloud shadow samples to zero to skip that work.
 

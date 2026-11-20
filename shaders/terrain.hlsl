@@ -87,22 +87,19 @@ GBuffer terrain_ps(TerrainVertex input) {
     }
     float roughness = dot(float4(material.meadow, material.organic, material.mineral, material.rock),
                           float4(0.97, 0.98, 0.94, 0.91));
-    if (lakeLevel > 0) {
-        // Distant slopes resolve into forest floor and broad rock faces as the
-        // individual tile variations become too small to distinguish.
-        float range = distance(camera.xyz, input.world);
-        float timber = 1 - smoothstep(lakeLevel + 350, lakeLevel + 510, input.world.y);
-        float clear = smoothstep(105, 275, length(input.world.xz - float2(1020, 1520)));
-        float grain = filteredMottling(xz * 0.004, footprint * 0.004);
-        float3 rock = lerp(float3(0.15,0.155,0.145), float3(0.31,0.30,0.255), grain);
-        float bare = smoothstep(0.32, 0.78, length(n.xz) + 0.45 * (1 - timber));
-        float3 hillside = lerp(float3(0.086, 0.141, 0.042), rock, bare);
-        hillside = lerp(hillside, float3(0.030,0.068,0.039), clear * timber * (1 - bare) * 0.86);
-        base = lerp(base, hillside * (0.86 + 0.25 * grain), 0.94 * smoothstep(140, 750, range));
-        AlpineSurface geology = alpineSurface(input.world, n, base, roughness, material.rock, projectionPass == 2 ? 0.25 : 1);
-        return materialSample(geology.color, geology.normal, 0, geology.roughness, MATERIAL_MATTE_GROUND);
-    }
-    return materialSample(base, n, 0, roughness, MATERIAL_MATTE_GROUND);
+    // Distant slopes resolve into forest floor and broad rock faces as the
+    // individual tile variations become too small to distinguish.
+    float range = distance(camera.xyz, input.world);
+    float timber = 1 - smoothstep(lakeLevel + 350, lakeLevel + 510, input.world.y);
+    float clear = smoothstep(105, 275, length(input.world.xz - float2(1020, 1520)));
+    float grain = filteredMottling(xz * 0.004, footprint * 0.004);
+    float3 rock = lerp(float3(0.15,0.155,0.145), float3(0.31,0.30,0.255), grain);
+    float bare = smoothstep(0.32, 0.78, length(n.xz) + 0.45 * (1 - timber));
+    float3 hillside = lerp(float3(0.086, 0.141, 0.042), rock, bare);
+    hillside = lerp(hillside, float3(0.030,0.068,0.039), clear * timber * (1 - bare) * 0.86);
+    base = lerp(base, hillside * (0.86 + 0.25 * grain), 0.94 * smoothstep(140, 750, range));
+    AlpineSurface geology = alpineSurface(input.world, n, base, roughness, material.rock, projectionPass == 2 ? 0.25 : 1);
+    return materialSample(geology.color, geology.normal, 0, geology.roughness, MATERIAL_MATTE_GROUND);
 }
 
 float4 terrain_reflection_ps(TerrainVertex input) : SV_Target {

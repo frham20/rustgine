@@ -206,7 +206,7 @@ impl SettingsPanel {
                         }
                     }
                     if let Some(_clouds) = ui.tab_item("Clouds") {
-                        cloud_settings(ui, &mut clouds, renderer.has_cloud_shadows());
+                        cloud_settings(ui, &mut clouds);
                         if self.cloud_resize_failed {
                             ui.text_wrapped("Could not allocate the selected cloud resolution.");
                         }
@@ -238,7 +238,7 @@ impl SettingsPanel {
     }
 }
 
-fn cloud_settings(ui: &Ui, clouds: &mut CloudQuality, has_shadows: bool) {
+fn cloud_settings(ui: &Ui, clouds: &mut CloudQuality) {
     ui.text("Sky resolution");
     if ui.is_item_hovered() {
         ui.tooltip_text(
@@ -266,15 +266,11 @@ fn cloud_settings(ui: &Ui, clouds: &mut CloudQuality, has_shadows: bool) {
     if ui.is_item_hovered() {
         ui.tooltip_text("Samples toward the sun. Set to 0 to skip shading within clouds.");
     }
-    if has_shadows {
-        ui.slider_config("Cloud shadow samples", 0, 48)
-            .flags(SliderFlags::ALWAYS_CLAMP)
-            .build(&mut clouds.shadow_steps);
-        if ui.is_item_hovered() {
-            ui.tooltip_text(
-                "Samples for cloud shadows on land and water. Set to 0 to disable them.",
-            );
-        }
+    ui.slider_config("Cloud shadow samples", 0, 48)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut clouds.shadow_steps);
+    if ui.is_item_hovered() {
+        ui.tooltip_text("Samples for cloud shadows on land and water. Set to 0 to disable them.");
     }
     if ui.button("Reset cloud settings") {
         *clouds = CloudQuality::default();

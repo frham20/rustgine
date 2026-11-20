@@ -21,13 +21,7 @@ fn capture_warp(label: &str, time: &str, grass: &str) -> (String, Vec<u8>) {
 }
 
 fn capture_warp_scene(label: &str, args: &[&str]) -> (String, Vec<u8>) {
-    capture_with_keys(label, args, &[])
-}
-
-fn capture_with_keys(label: &str, args: &[&str], keys: &[VIRTUAL_KEY]) -> (String, Vec<u8>) {
-    let mut meadow = vec!["--scene", "meadow"];
-    meadow.extend_from_slice(args);
-    capture_scene(label, &meadow, keys)
+    capture_scene(label, args, &[])
 }
 
 fn capture_scene(label: &str, args: &[&str], keys: &[VIRTUAL_KEY]) -> (String, Vec<u8>) {
@@ -144,44 +138,6 @@ fn alpine_overlook_draws_water_and_forested_shores_without_grass() {
 
 #[test]
 #[ignore = "requires D3D12 WARP and a Windows desktop session"]
-fn captures_show_a_lit_cube_rotating_above_the_terrain() {
-    let mut images = Vec::new();
-    for time in ["0", "2"] {
-        let (log, raw) = capture_warp(time, time, "off");
-        if time == "0" {
-            let peak: f32 = log
-                .split("Scene-linear RGB peak ")
-                .nth(1)
-                .unwrap()
-                .split(',')
-                .next()
-                .unwrap()
-                .parse()
-                .unwrap();
-            assert!(peak > 1.0, "HDR scene was clipped, peak {peak}");
-        }
-        let (w, h, rgb) = ppm_image(&raw);
-        let [red, green, _] = rgb[w * (h / 2) + w / 2];
-        assert!(green.saturating_sub(red) > 35, "missing teal cube");
-        assert!(
-            log.contains("5000 m x 5000 m"),
-            "terrain missing from cube capture"
-        );
-        images.push(rgb.as_flattened().to_vec());
-    }
-    let changed = images[0]
-        .iter()
-        .zip(&images[1])
-        .filter(|(a, b)| a.abs_diff(**b) > 10)
-        .count();
-    assert!(
-        changed > images[0].len() / 100,
-        "rotation did not change the image"
-    );
-}
-
-#[test]
-#[ignore = "requires D3D12 WARP and a Windows desktop session"]
 fn grass_capture_repeats_and_wind_moves_blades() {
     let (log, first) = capture_warp("grass", "0", "instanced");
     let (_, repeat) = capture_warp("grass-repeat", "0", "instanced");
@@ -193,27 +149,15 @@ fn grass_capture_repeats_and_wind_moves_blades() {
     let (w, h, first) = ppm_image(&first);
     let (_, _, later) = ppm_image(&later);
     let (_, _, original) = ppm_image(&original);
-    let center = (h / 2) * w + w / 2;
-    assert_eq!(first[center], original[center], "grass occluded the cube");
-    // Sample the exposed left peak above the mixed-material foothills.
-    for y in h * 9 / 64..h * 7 / 32 {
-        let strip = y * w + w * 11 / 48..y * w + w * 14 / 48;
-        assert_eq!(
-            first[strip.clone()],
-            original[strip],
-            "grass grew on exposed rock"
-        );
-    }
-    // This foreground region sits outside the cube and its shadow.
     let mut green_pixels = 0;
     let mut moved_pixels = 0;
     for y in (h * 2 / 3)..h {
-        for x in 0..(w / 5) {
+        for x in 0..w {
             let i = y * w + x;
-            green_pixels += usize::from(
-                first[i] != original[i] && first[i][1].saturating_sub(first[i][2]) > 16,
-            );
-            moved_pixels += usize::from(first[i][1].abs_diff(later[i][1]) > 10);
+            let visible_grass =
+                first[i] != original[i] && first[i][1].saturating_sub(first[i][2]) > 16;
+            green_pixels += usize::from(visible_grass);
+            moved_pixels += usize::from(visible_grass && first[i][1].abs_diff(later[i][1]) > 10);
         }
     }
     assert!(green_pixels > w * h / 50, "missing foreground grass");
@@ -266,7 +210,7 @@ fn f1_cycles_shaded_overlay_and_wireframe_only() {
             .into_iter()
             .chain([VK_F1; 3][..presses].iter().copied())
             .collect();
-        capture_with_keys(label, &args, &keys).1
+        capture_scene(label, &args, &keys).1
     };
     let normal = capture_mode("f1-normal", 0);
     let overlay = capture_mode("f1-overlay", 1);
@@ -316,13 +260,13 @@ fn grass_distance_keys_change_visible_patches_and_restore_the_default() {
             .parse()
             .unwrap()
     };
-    let (base, original) = capture_with_keys("grass-distance-default", &args, &[]);
+    let (base, original) = capture_scene("grass-distance-default", &args, &[]);
     assert!(base.contains("Grass distance: 1000 m."), "{base}");
-    let (shorter, _) = capture_with_keys("grass-distance-shorter", &args, &[VK_DELETE]);
+    let (shorter, _) = capture_scene("grass-distance-shorter", &args, &[VK_DELETE]);
     assert!(shorter.contains("Grass distance: 800 m."), "{shorter}");
     assert!(patch_count(&shorter) < patch_count(&base));
 
-    let (_, restored) = capture_with_keys(
+    let (_, restored) = capture_scene(
         "grass-distance-restored",
         &args,
         &[VK_DELETE, VK_INSERT, VK_INSERT],
@@ -337,9 +281,9 @@ fn grass_distance_keys_change_visible_patches_and_restore_the_default() {
 #[ignore = "requires D3D12 WARP and a Windows desktop session"]
 fn f5_toggles_the_settings_overlay() {
     let args = ["--grass-path", "off"];
-    let (_, hidden) = capture_with_keys("settings-default", &args, &[]);
-    let (_, opened) = capture_with_keys("settings-opened", &args, &[VK_F5]);
-    let (_, closed) = capture_with_keys("settings-closed", &args, &[VK_F5; 2]);
+    let (_, hidden) = capture_scene("settings-default", &args, &[]);
+    let (_, opened) = capture_scene("settings-opened", &args, &[VK_F5]);
+    let (_, closed) = capture_scene("settings-closed", &args, &[VK_F5; 2]);
     let (w, h, hidden_pixels) = ppm_image(&hidden);
     let (_, _, opened_pixels) = ppm_image(&opened);
     let changed = hidden_pixels
@@ -358,13 +302,13 @@ fn f5_toggles_the_settings_overlay() {
 #[test]
 #[ignore = "requires D3D12 WARP and a Windows desktop session"]
 fn twilight_sky_has_no_hard_shadow_band() {
-    let (_, twilight) = capture_with_keys("sky-twilight", &["--grass-path", "off"], &[VK_F4; 25]);
+    let (_, twilight) = capture_scene("sky-twilight", &["--grass-path", "off"], &[VK_F4; 34]);
     let (w, h, pixels) = ppm_image(&twilight);
 
-    // At 18:15 the old shadow boundary crossed this open strip of sky east of the peaks.
+    // At 18:15 check an open strip of sky above the alpine peaks.
     let mut peak_jump = 0;
-    for y in h * 21 / 100..h * 23 / 100 {
-        for x in w * 87 / 100..w * 95 / 100 {
+    for y in h * 8 / 100..h * 14 / 100 {
+        for x in w * 55 / 100..w * 69 / 100 {
             let above = pixels[y * w + x];
             let below = pixels[(y + 1) * w + x];
             for (a, b) in above.into_iter().zip(below) {
@@ -379,21 +323,21 @@ fn twilight_sky_has_no_hard_shadow_band() {
 #[ignore = "requires D3D12 WARP and a Windows desktop session"]
 fn f4_advances_the_sun_and_wraps_after_a_full_day() {
     let args = ["--grass-path", "off"];
-    let (_, noon) = capture_with_keys("time-noon", &args, &[]);
-    let (_, afternoon) = capture_with_keys("time-afternoon", &args, &[VK_F4]);
-    let (_, midnight) = capture_with_keys("time-midnight", &args, &[VK_F4; 48]);
-    let (_, next_noon) = capture_with_keys("time-next-noon", &args, &[VK_F4; 96]);
+    let (_, morning) = capture_scene("time-morning", &args, &[]);
+    let (_, later) = capture_scene("time-later", &args, &[VK_F4]);
+    let (_, night) = capture_scene("time-night", &args, &[VK_F4; 48]);
+    let (_, next_morning) = capture_scene("time-next-morning", &args, &[VK_F4; 96]);
 
-    assert!(afternoon != noon, "F4 should move the sun");
-    let (w, h, noon_sky) = ppm_image(&noon);
-    let (_, _, midnight_sky) = ppm_image(&midnight);
+    assert!(later != morning, "F4 should move the sun");
+    let (w, h, morning_sky) = ppm_image(&morning);
+    let (_, _, night_sky) = ppm_image(&night);
     let sky_pixel = w * (h / 16) + w / 2;
     assert!(
-        midnight_sky[sky_pixel][2] < noon_sky[sky_pixel][2] / 4,
+        night_sky[sky_pixel][2] < morning_sky[sky_pixel][2] / 4,
         "night sky should darken"
     );
     assert!(
-        next_noon == noon,
+        next_morning == morning,
         "96 quarter-hour steps should return to the same time"
     );
 }

@@ -435,7 +435,7 @@ impl Renderer {
             &slots[0].allocator,
             None,
         )?;
-        let (pipes, scene_pipelines) = Pipelines::new(&device, grass_path, options.alpine)?;
+        let (pipes, scene_pipelines) = Pipelines::new(&device, grass_path)?;
         let mut staging = Vec::new();
         let noise = cloud_noise::load(&device, &list, srv.cpu(CLOUD_NOISE_SRV), &mut staging)?;
         let terrain_textures = terrain_textures::load(
@@ -462,13 +462,7 @@ impl Renderer {
             &mut staging,
         )?;
         println!("Grass path: {grass_path}");
-        let shadow = create_shadow(
-            &device,
-            &dsv,
-            &srv,
-            DEFAULT_SHADOW_SIZE,
-            if options.alpine { SHADOW_CASCADES } else { 1 },
-        )?;
+        let shadow = create_shadow(&device, &dsv, &srv, DEFAULT_SHADOW_SIZE, SHADOW_CASCADES)?;
         let cloud_shadow = resource(
             &device,
             D3D12_HEAP_TYPE_DEFAULT,
@@ -483,14 +477,8 @@ impl Renderer {
         )?;
         device.CreateRenderTargetView(&cloud_shadow, None, rtv.cpu(CLOUD_SHADOW_RTV));
         device.CreateShaderResourceView(&cloud_shadow, None, srv.cpu(CLOUD_SHADOW_SRV));
-        let (landform_side, landforms) = if options.alpine {
-            (
-                crate::terrain::alpine::LANDFORM_SIDE,
-                crate::terrain::alpine::landform_maps(&scene.terrain),
-            )
-        } else {
-            (1, [vec![0; 4], vec![0; 4]])
-        };
+        let landform_side = crate::terrain::alpine::LANDFORM_SIDE;
+        let landforms = crate::terrain::alpine::landform_maps(&scene.terrain);
         let layers = landforms.map(|rgba| sampled_texture::rgba_mips(rgba, landform_side, false));
         let mut desc = texture(
             landform_side as u32,
@@ -660,11 +648,7 @@ impl Renderer {
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
         );
         self.viewport(self.shadow_size, self.shadow_size);
-        let layers = if self.scene.alpine.is_some() {
-            SHADOW_CASCADES
-        } else {
-            1
-        };
+        let layers = SHADOW_CASCADES;
         for cascade in 0..layers {
             let depth = self.dsv.cpu(SHADOW_DSV + cascade);
             list.OMSetRenderTargets(0, None, false, Some(&depth));
@@ -886,10 +870,6 @@ impl Renderer {
         self.cloud_quality
     }
 
-    pub fn has_cloud_shadows(&self) -> bool {
-        self.scene.alpine.is_some()
-    }
-
     pub unsafe fn set_cloud_quality(&mut self, quality: CloudQuality) -> Result<()> {
         if quality.resolution_divisor != self.cloud_quality.resolution_divisor {
             // The descriptors and old target may still be in use by the GPU.
@@ -914,11 +894,7 @@ impl Renderer {
         if size != self.shadow_size {
             // Both descriptors may be referenced by submitted command lists.
             self.idle()?;
-            let layers = if self.scene.alpine.is_some() {
-                SHADOW_CASCADES
-            } else {
-                1
-            };
+            let layers = SHADOW_CASCADES;
             self.shadow = create_shadow(&self.device, &self.dsv, &self.srv, size, layers)?;
             self.shadow_size = size;
             self.alpine_shadows_valid = false;
@@ -946,13 +922,10 @@ impl Renderer {
             exposure,
             self.output.hdr,
             self.output.peak_nits,
-            self.scene.terrain.approximate_height(glam::Vec2::ZERO),
         );
         frame.fps_hud = hud.fps;
         frame.cloud_quality = self.cloud_quality;
-        if self.scene.alpine.is_some() {
-            frame.configure_alpine(camera, self.shadow_size);
-        }
+        frame.configure_alpine(camera, self.shadow_size);
         if let Some(grass) = &self.scene.grass {
             frame.grass[1..].copy_from_slice(&grass.settings.color_scale());
         }
@@ -970,20 +943,19 @@ impl Renderer {
             frame.terrain_lod_view(),
             &mut slot.lod_feedback,
         )?;
-        if let Some(alpine) = &mut self.scene.alpine {
-            let forest_draws_changed =
-                alpine.prepare_forest_draws(list, slot.constants.GetGPUVirtualAddress(), &frame);
-            // Tree selection and terrain LOD both affect shadow casters.
-            if forest_draws_changed || terrain_changed {
-                self.alpine_shadows_valid = false;
-            }
-            if terrain_changed {
-                alpine.anchor_trees(
-                    list,
-                    slot.constants.GetGPUVirtualAddress(),
-                    &self.scene.terrain,
-                );
-            }
+        let alpine = &mut self.scene.alpine;
+        let forest_draws_changed =
+            alpine.prepare_forest_draws(list, slot.constants.GetGPUVirtualAddress(), &frame);
+        // Tree selection and terrain LOD both affect shadow casters.
+        if forest_draws_changed || terrain_changed {
+            self.alpine_shadows_valid = false;
+        }
+        if terrain_changed {
+            alpine.anchor_trees(
+                list,
+                slot.constants.GetGPUVirtualAddress(),
+                &self.scene.terrain,
+            );
         }
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::TerrainReady);
@@ -1014,12 +986,10 @@ impl Renderer {
         if mode != RenderMode::WireframeOnly && frame.sun[1] > 0.0 {
             if !self.alpine_shadows_valid {
                 self.shadow_pass();
-                self.alpine_shadows_valid = self.scene.alpine.is_some();
+                self.alpine_shadows_valid = true;
             }
             if self.cloud_quality.shadow_steps > 0 && frame.sun[1] > 0.025 {
-                if let Some(alpine) = &self.scene.alpine {
-                    self.cloud_shadow_pass(alpine);
-                }
+                self.cloud_shadow_pass(&self.scene.alpine);
             }
         }
         list.SetGraphicsRootDescriptorTable(CLOUD_SHADOW_ROOT, self.srv.gpu(CLOUD_SHADOW_SRV));
@@ -1027,9 +997,7 @@ impl Renderer {
             timer.mark(list, GpuMark::ShadowsReady);
         }
         if mode != RenderMode::WireframeOnly {
-            if let Some(alpine) = &self.scene.alpine {
-                self.reflection_pass(targets, alpine);
-            }
+            self.reflection_pass(targets, &self.scene.alpine);
         }
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::ReflectionReady);

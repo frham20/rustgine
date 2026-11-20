@@ -39,9 +39,6 @@ fn main() {
     let dxc = find_dxc();
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     for (entry, profile) in [
-        ("scene_vs", "vs_6_0"),
-        ("shadow_vs", "vs_6_0"),
-        ("scene_ps", "ps_6_0"),
         ("wireframe_ps", "ps_6_0"),
         ("output_vs", "vs_6_0"),
         ("output_ps", "ps_6_0"),

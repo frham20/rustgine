@@ -18,22 +18,6 @@ pub struct Camera {
     pitch: f32,
 }
 
-impl Default for Camera {
-    fn default() -> Self {
-        let ground = crate::terrain::origin_height();
-        let eye = Vec3::new(5.5, ground + 3.5, 7.5);
-        let target = Vec3::new(0.0, ground + 2.95, 0.0);
-        let forward = (target - eye).normalize();
-        Self {
-            eye,
-            speed_kmh: 50.0,
-            draw_distance: 18_000.0,
-            yaw: forward.x.atan2(-forward.z),
-            pitch: forward.y.asin(),
-        }
-    }
-}
-
 impl Camera {
     pub fn alpine_overlook() -> Self {
         let p = crate::terrain::alpine::OVERLOOK;
@@ -41,7 +25,8 @@ impl Camera {
             eye: Vec3::new(p.x, crate::terrain::alpine::height(p) + 3.5, p.y),
             yaw: -0.39,
             pitch: -0.14,
-            ..Self::default()
+            speed_kmh: 50.0,
+            draw_distance: 18_000.0,
         }
     }
 
@@ -78,7 +63,7 @@ mod tests {
             eye: Vec3::ZERO,
             yaw: 0.0,
             pitch: 0.0,
-            ..Camera::default()
+            ..Camera::alpine_overlook()
         };
         camera.update(
             Vec2::Y,
@@ -93,7 +78,7 @@ mod tests {
 
     #[test]
     fn diagonal_flight_doubles_with_boost_and_returns_to_base_speed() {
-        let mut camera = Camera::default();
+        let mut camera = Camera::alpine_overlook();
         let start = camera.eye;
         // Repeated f32 position updates round at the scale of the terrain elevation.
         let tolerance = 12.0 * f32::EPSILON * start.abs().max_element();

@@ -317,11 +317,9 @@ pub struct Pipelines {
 }
 
 pub struct ScenePipelines {
-    pub cube: SurfacePipelines,
-    pub cube_shadow: ID3D12PipelineState,
     pub grass: Option<GrassPipeline>,
     pub terrain: TerrainGraphics,
-    pub alpine: Option<AlpinePipelines>,
+    pub alpine: AlpinePipelines,
 }
 
 pub struct AlpinePipelines {
@@ -407,7 +405,6 @@ impl Pipelines {
     pub unsafe fn new(
         device: &ID3D12Device,
         grass_path: GrassPath,
-        alpine: bool,
     ) -> Result<(Self, ScenePipelines)> {
         let root = signature(device)?;
         let layout = [(s!("POSITION"), 0), (s!("NORMAL"), 12)].map(|(semantic, offset)| {
@@ -521,17 +518,6 @@ impl Pipelines {
                 )?,
             }
         };
-        let shadow = graphics(
-            states(true, true, DXGI_FORMAT_UNKNOWN),
-            shader!("shadow_vs"),
-            Default::default(),
-            true,
-        )?;
-        let scene = SurfacePipelines::new(
-            states(true, false, SCENE_FORMAT),
-            shader!("scene_ps"),
-            |desc, pixel| graphics(desc, shader!("scene_vs"), pixel, true),
-        )?;
         let grass = match grass_path {
             GrassPath::Mesh => Some(GrassPipeline::Mesh(SurfacePipelines::new(
                 states(true, false, SCENE_FORMAT),
@@ -545,7 +531,7 @@ impl Pipelines {
             )?)),
             GrassPath::Auto | GrassPath::Off => None,
         };
-        let alpine = if alpine {
+        let alpine = {
             let mut params = [
                 root_descriptor(D3D12_ROOT_PARAMETER_TYPE_CBV, 0),
                 root_descriptor(D3D12_ROOT_PARAMETER_TYPE_SRV, 7),
@@ -587,7 +573,7 @@ impl Pipelines {
                 })
             };
             let reflection = |vs, ps| graphics(states(true, false, SCENE_FORMAT), vs, ps, true);
-            Some(AlpinePipelines {
+            AlpinePipelines {
                 forest_root,
                 anchor_trees: anchor_trees?,
                 cull_forest: cull_forest?,
@@ -627,13 +613,9 @@ impl Pipelines {
                     shader!("sky_reflection_ps"),
                     false,
                 )?,
-            })
-        } else {
-            None
+            }
         };
         let scene_pipelines = ScenePipelines {
-            cube: scene,
-            cube_shadow: shadow,
             grass,
             terrain,
             alpine,

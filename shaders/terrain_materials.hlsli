@@ -98,12 +98,9 @@ TerrainMaterials terrainMaterials(float3 world, float3 normal, float footprint) 
     TerrainMaterials material;
     float2 xz = world.xz;
     material.slope = length(normal.xz);
-    float upland = smoothstep(88, 183, world.y);
-    if (lakeLevel > 0) {
-        upland = smoothstep(lakeLevel + 280, lakeLevel + 650, world.y);
-        // Meadow and conifer duff persist on moderate alpine banks.
-        material.slope *= lerp(0.55, 0.92, upland);
-    }
+    float upland = smoothstep(lakeLevel + 280, lakeLevel + 650, world.y);
+    // Meadow and conifer duff persist on moderate alpine banks.
+    material.slope *= lerp(0.55, 0.92, upland);
     // Long-term exposure biases the material blend independently of the current hour.
     float aspect = dot(normal.xz, normalize(float2(-0.67, 0.50)));
     float groundCover = filteredMottling(xz * 0.026 + float2(17, 83), footprint * 0.026);
@@ -118,10 +115,8 @@ TerrainMaterials terrainMaterials(float3 world, float3 normal, float footprint) 
     material.organic = (1.0 - material.rock - material.mineral) * smoothstep(0.62, 0.93, material.moisture)
                      * smoothstep(0.24, 0.82, groundCover);
     material.meadow = 1.0 - material.rock - material.mineral - material.organic;
-    if (lakeLevel > 0) {
-        float bank = smoothstep(lakeLevel + 0.3, lakeLevel + 4.5, world.y);
-        material.mineral += material.meadow * (1 - bank);
-        material.meadow *= bank;
-    }
+    float bank = smoothstep(lakeLevel + 0.3, lakeLevel + 4.5, world.y);
+    material.mineral += material.meadow * (1 - bank);
+    material.meadow *= bank;
     return material;
 }
