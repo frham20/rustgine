@@ -3,9 +3,7 @@ mod compute;
 use self::compute::{GrassCompute, GrassWork, ARGUMENT_OFFSET};
 use crate::{
     gpu::{buffer, upload},
-    pipeline::{
-        SurfacePass, SurfacePipelines, GRASS_BASE_ROOT, GRASS_PATCHES_ROOT, GRASS_STATS_ROOT,
-    },
+    pipeline::{SurfacePass, SurfacePipelines, GRASS_PATCHES_ROOT, GRASS_STATS_ROOT},
     terrain::Terrain,
 };
 use std::fmt;
@@ -237,50 +235,11 @@ impl Grass {
             }
         };
 
-        let mesh = indexed.is_none();
-        let mesh_args = [D3D12_INDIRECT_ARGUMENT_DESC {
-            Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
-            ..Default::default()
-        }];
-        let indexed_args = [
-            D3D12_INDIRECT_ARGUMENT_DESC {
-                Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
-                Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
-                    Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
-                        RootParameterIndex: GRASS_BASE_ROOT,
-                        DestOffsetIn32BitValues: 0,
-                        Num32BitValuesToSet: 1,
-                    },
-                },
-            },
-            D3D12_INDIRECT_ARGUMENT_DESC {
-                Type: D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
-                ..Default::default()
-            },
-        ];
-        let (arguments, byte_stride): (&[_], usize) = if mesh {
-            (&mesh_args, size_of::<D3D12_DISPATCH_MESH_ARGUMENTS>())
-        } else {
-            (
-                &indexed_args,
-                size_of::<u32>() + size_of::<D3D12_DRAW_INDEXED_ARGUMENTS>(),
-            )
-        };
-        let mut commands = None;
-        device.CreateCommandSignature(
-            &D3D12_COMMAND_SIGNATURE_DESC {
-                ByteStride: byte_stride as u32,
-                NumArgumentDescs: arguments.len() as u32,
-                pArgumentDescs: arguments.as_ptr(),
-                NodeMask: 0,
-            },
-            (!mesh).then_some(root),
-            &mut commands,
-        )?;
+        let commands = crate::pipeline::instance_commands(device, root, indexed.is_none())?;
 
         Ok(Self {
             compute: GrassCompute::new(device, frame_count)?,
-            commands: commands.unwrap(),
+            commands,
             pipeline,
             indexed,
             full_density,

@@ -337,6 +337,7 @@ pub struct Renderer {
     cloud_quality: CloudQuality,
     _landforms: ID3D12Resource,
     shadow_size: u32,
+    alpine_shadows_valid: bool,
     overlay: Overlay,
     _terrain_textures: ID3D12Resource,
     _detail_slopes: ID3D12Resource,
@@ -545,6 +546,7 @@ impl Renderer {
             cloud_quality: CloudQuality::default(),
             _landforms: landforms,
             shadow_size: DEFAULT_SHADOW_SIZE,
+            alpine_shadows_valid: false,
             overlay,
             _terrain_textures: terrain_textures,
             _detail_slopes: detail_slopes,
@@ -919,6 +921,7 @@ impl Renderer {
             };
             self.shadow = create_shadow(&self.device, &self.dsv, &self.srv, size, layers)?;
             self.shadow_size = size;
+            self.alpine_shadows_valid = false;
             println!("Shadow map: {size} x {size}.");
         }
         Ok(())
@@ -947,13 +950,8 @@ impl Renderer {
         );
         frame.fps_hud = hud.fps;
         frame.cloud_quality = self.cloud_quality;
-        if let Some(scene) = &mut self.scene.alpine {
+        if self.scene.alpine.is_some() {
             frame.configure_alpine(camera, self.shadow_size);
-            scene.prepare(
-                camera.eye,
-                glam::Mat4::from_cols_array(&frame.view_projection),
-                &frame.light_projection,
-            );
         }
         if let Some(grass) = &self.scene.grass {
             frame.grass[1..].copy_from_slice(&grass.settings.color_scale());
@@ -972,8 +970,13 @@ impl Renderer {
             frame.terrain_lod_view(),
             &mut slot.lod_feedback,
         )?;
-        if terrain_changed {
-            if let Some(alpine) = &self.scene.alpine {
+        if let Some(alpine) = &mut self.scene.alpine {
+            let forest_changed =
+                alpine.prepare(list, slot.constants.GetGPUVirtualAddress(), &frame);
+            if forest_changed || terrain_changed {
+                self.alpine_shadows_valid = false;
+            }
+            if terrain_changed {
                 alpine.anchor_trees(
                     list,
                     slot.constants.GetGPUVirtualAddress(),
@@ -1008,7 +1011,10 @@ impl Renderer {
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         let targets = self.targets.as_ref().unwrap();
         if mode != RenderMode::WireframeOnly && frame.sun[1] > 0.0 {
-            self.shadow_pass();
+            if !self.alpine_shadows_valid {
+                self.shadow_pass();
+                self.alpine_shadows_valid = self.scene.alpine.is_some();
+            }
             if self.cloud_quality.shadow_steps > 0 && frame.sun[1] > 0.025 {
                 if let Some(alpine) = &self.scene.alpine {
                     self.cloud_shadow_pass(alpine);

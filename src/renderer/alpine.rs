@@ -1,12 +1,11 @@
 use crate::{
-    camera::frustum_planes,
-    gpu::{transition, upload_to_gpu, upload_to_gpu_with_flags},
-    pipeline::{AlpinePipelines, SurfacePass},
-    scene::Vertex,
+    gpu::{buffer_with_flags, transition, upload_to_gpu, upload_to_gpu_with_flags},
+    pipeline::{AlpinePipelines, SurfacePass, INDEXED_INSTANCE_STRIDE},
+    scene::{Frame, Vertex, SHADOW_CASCADES},
     terrain::{alpine, Projection, Terrain, SIDE_METERS},
 };
-use glam::{Mat4, Vec2, Vec3, Vec4};
-use std::{f32::consts::TAU, ops::Range};
+use glam::{Vec2, Vec3};
+use std::f32::consts::TAU;
 use windows::{
     core::Result,
     Win32::Graphics::{Direct3D12::*, Dxgi::Common::DXGI_FORMAT_R32_UINT},
@@ -252,10 +251,12 @@ fn pine_billboard() -> Mesh {
     mesh
 }
 
+#[repr(C)]
 struct Stand {
-    range: Range<u32>,
-    center: Vec3,
-    extent: Vec3,
+    center: [f32; 3],
+    first: u32,
+    extent: [f32; 3],
+    count: u32,
 }
 
 fn hash(mut h: u32) -> u32 {
@@ -298,13 +299,14 @@ fn scatter(terrain: &Terrain) -> (Vec<[f32; 4]>, Vec<Stand>) {
             if first < trees.len() as u32 {
                 let mid = origin + tile_size * 0.5;
                 stands.push(Stand {
-                    range: first..trees.len() as u32,
-                    center: Vec3::new(mid.x, (lo + hi) * 0.5, mid.y),
-                    extent: Vec3::new(
+                    first,
+                    count: trees.len() as u32 - first,
+                    center: [mid.x, (lo + hi) * 0.5, mid.y],
+                    extent: [
                         tile_size * 0.5 + 9.0,
                         (hi - lo) * 0.5 + 28.0, // Allow for grounding on coarser terrain triangles.
                         tile_size * 0.5 + 9.0,
-                    ),
+                    ],
                 });
             }
         }
@@ -312,35 +314,16 @@ fn scatter(terrain: &Terrain) -> (Vec<[f32; 4]>, Vec<Stand>) {
     (trees, stands)
 }
 
-#[derive(Default)]
-struct TreeDraws {
-    near: Vec<Range<u32>>,
-    far: Vec<Range<u32>>,
+#[derive(PartialEq)]
+struct ForestView {
+    camera: [f32; 16],
+    lights: [[f32; 16]; SHADOW_CASCADES],
+    eye: [f32; 4],
 }
 
-impl TreeDraws {
-    fn select(&mut self, stands: &[Stand], planes: &[Vec4; 6], eye: Vec3) {
-        self.near.clear();
-        self.far.clear();
-        for stand in stands {
-            if planes.iter().any(|p| {
-                p.dot(stand.center.extend(1.0)) + p.truncate().abs().dot(stand.extent) < 0.0
-            }) {
-                continue;
-            }
-            let closest = ((stand.center - eye).abs() - stand.extent).max(Vec3::ZERO);
-            let ranges = if closest.length_squared() < 240.0_f32.powi(2) {
-                &mut self.near
-            } else {
-                &mut self.far
-            };
-            if let Some(previous) = ranges.last_mut().filter(|r| r.end == stand.range.start) {
-                previous.end = stand.range.end;
-            } else {
-                ranges.push(stand.range.clone());
-            }
-        }
-    }
+// Each stream starts with its ExecuteIndirect count, followed by indexed commands.
+fn stream_size(stands: u32) -> u64 {
+    4 + u64::from(stands) * u64::from(INDEXED_INSTANCE_STRIDE)
 }
 
 pub(super) struct AlpineScene {
@@ -351,10 +334,10 @@ pub(super) struct AlpineScene {
     billboard: GpuMesh,
     instances: ID3D12Resource,
     tree_count: u32,
-    stands: Vec<Stand>,
-    visible: TreeDraws,
-    reflected: TreeDraws,
-    casters: [TreeDraws; crate::scene::SHADOW_CASCADES],
+    stands: ID3D12Resource,
+    stand_count: u32,
+    commands: ID3D12Resource,
+    last_view: Option<ForestView>,
 }
 
 impl AlpineScene {
@@ -385,6 +368,21 @@ impl AlpineScene {
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
             staging,
         )?;
+        let stand_count = stands.len() as u32;
+        let stands = upload_to_gpu(
+            device,
+            list,
+            &stands,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            staging,
+        )?;
+        let commands = buffer_with_flags(
+            device,
+            (SHADOW_CASCADES + 2) as u64 * 2 * stream_size(stand_count),
+            D3D12_HEAP_TYPE_DEFAULT,
+            D3D12_RESOURCE_STATE_COMMON,
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+        )?;
         let mut upload = |m| GpuMesh::upload(m, device, list, staging);
         Ok(Self {
             pipes,
@@ -395,31 +393,45 @@ impl AlpineScene {
             instances,
             tree_count: trees.len() as u32,
             stands,
-            visible: TreeDraws::default(),
-            reflected: TreeDraws::default(),
-            casters: Default::default(),
+            stand_count,
+            commands,
+            last_view: None,
         })
     }
 
-    pub(super) fn prepare(
+    pub(super) unsafe fn prepare(
         &mut self,
-        eye: Vec3,
-        view: Mat4,
-        lights: &[[f32; 16]; crate::scene::SHADOW_CASCADES],
-    ) {
-        let mirror = Mat4::from_translation(Vec3::Y * (2.0 * alpine::LAKE_LEVEL))
-            * Mat4::from_scale(Vec3::new(1.0, -1.0, 1.0));
-        self.visible
-            .select(&self.stands, &frustum_planes(view), eye);
-        self.reflected
-            .select(&self.stands, &frustum_planes(view * mirror), eye);
-        for (casters, light) in self.casters.iter_mut().zip(lights) {
-            casters.select(
-                &self.stands,
-                &frustum_planes(Mat4::from_cols_array(light)),
-                eye,
-            );
+        list: &ID3D12GraphicsCommandList,
+        constants: u64,
+        frame: &Frame,
+    ) -> bool {
+        let view = ForestView {
+            camera: frame.view_projection,
+            lights: frame.light_projection,
+            eye: frame.camera,
+        };
+        if self.last_view.as_ref() == Some(&view) {
+            return false;
         }
+        let indirect = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        let uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        let previous = if self.last_view.is_some() {
+            indirect
+        } else {
+            D3D12_RESOURCE_STATE_COMMON
+        };
+        transition(list, &self.commands, previous, uav);
+        list.SetComputeRootSignature(&self.pipes.forest_root);
+        list.SetComputeRootConstantBufferView(0, constants);
+        list.SetComputeRootShaderResourceView(1, self.stands.GetGPUVirtualAddress());
+        list.SetComputeRootUnorderedAccessView(3, self.commands.GetGPUVirtualAddress());
+        let params = [self.stand_count, self.pine.count, self.billboard.count];
+        list.SetComputeRoot32BitConstants(4, 3, params.as_ptr().cast(), 0);
+        list.SetPipelineState(&self.pipes.cull_forest);
+        list.Dispatch((SHADOW_CASCADES + 2) as u32, 1, 1);
+        transition(list, &self.commands, uav, indirect);
+        self.last_view = Some(view);
+        true
     }
 
     pub(super) unsafe fn anchor_trees(
@@ -431,7 +443,7 @@ impl AlpineScene {
         let srv = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         let uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         transition(list, &self.instances, srv, uav);
-        list.SetComputeRootSignature(&self.pipes.anchor_root);
+        list.SetComputeRootSignature(&self.pipes.forest_root);
         list.SetComputeRootConstantBufferView(0, frame);
         terrain.bind_active_surface(list, 1, 2);
         list.SetComputeRootUnorderedAccessView(3, self.instances.GetGPUVirtualAddress());
@@ -441,29 +453,20 @@ impl AlpineScene {
         transition(list, &self.instances, uav, srv);
     }
 
-    unsafe fn trees(
-        &self,
-        list: &ID3D12GraphicsCommandList,
-        draws: &TreeDraws,
-        projection: Projection,
-    ) {
-        for (billboard, mesh, ranges) in [
-            (false, &self.pine, &draws.near),
-            (true, &self.billboard, &draws.far),
-        ] {
+    unsafe fn trees(&self, list: &ID3D12GraphicsCommandList, view: usize, projection: Projection) {
+        list.SetGraphicsRootShaderResourceView(4, self.instances.GetGPUVirtualAddress());
+        for (lod, mesh) in [&self.pine, &self.billboard].into_iter().enumerate() {
             mesh.bind(list);
-            list.SetGraphicsRoot32BitConstant(
-                1,
-                projection as u32 | (u32::from(billboard) << 2),
-                0,
+            list.SetGraphicsRoot32BitConstant(1, projection as u32 | ((lod as u32) << 2), 0);
+            let count_offset = (2 * view + lod) as u64 * stream_size(self.stand_count);
+            list.ExecuteIndirect(
+                &self.pipes.forest_draw,
+                self.stand_count,
+                &self.commands,
+                count_offset + 4,
+                Some(&self.commands),
+                count_offset,
             );
-            for range in ranges {
-                list.SetGraphicsRootShaderResourceView(
-                    4,
-                    self.instances.GetGPUVirtualAddress() + u64::from(range.start) * 16,
-                );
-                list.DrawIndexedInstanced(mesh.count, range.end - range.start, 0, 0, 0);
-            }
         }
     }
 
@@ -474,7 +477,7 @@ impl AlpineScene {
         list.SetPipelineState(self.pipes.lake.get(pass));
         self.lake.draw(list);
         list.SetPipelineState(self.pipes.pine.get(pass));
-        self.trees(list, &self.visible, Projection::Camera);
+        self.trees(list, 0, Projection::Camera);
     }
 
     pub(super) unsafe fn shadows(&self, list: &ID3D12GraphicsCommandList, cascade: usize) {
@@ -482,7 +485,7 @@ impl AlpineScene {
         list.SetPipelineState(&self.pipes.range_shadow);
         self.ranges.draw(list);
         list.SetPipelineState(&self.pipes.pine_shadow);
-        self.trees(list, &self.casters[cascade], Projection::Shadow);
+        self.trees(list, 2 + cascade, Projection::Shadow);
     }
 
     pub(super) unsafe fn reflection(&self, list: &ID3D12GraphicsCommandList, terrain: &Terrain) {
@@ -490,6 +493,6 @@ impl AlpineScene {
         list.SetPipelineState(&self.pipes.land_reflection);
         self.ranges.draw(list);
         list.SetPipelineState(&self.pipes.pine_reflection);
-        self.trees(list, &self.reflected, Projection::Reflection);
+        self.trees(list, 1, Projection::Reflection);
     }
 }

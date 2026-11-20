@@ -73,6 +73,7 @@ fn main() {
         ("land_reflection_ps", "ps_6_0"),
         ("pine_vs", "vs_6_0"),
         ("anchor_trees", "cs_6_0"),
+        ("cull_forest", "cs_6_0"),
         ("pine_ps", "ps_6_0"),
         ("pine_reflection_ps", "ps_6_0"),
         ("lake_vs", "vs_6_0"),
@@ -85,6 +86,8 @@ fn main() {
             "deferred_ps" | "clouds_ps" | "sky_reflection_ps" | "cloud_shadow_ps"
         ) {
             "shaders/deferred.hlsl"
+        } else if entry == "cull_forest" {
+            "shaders/forest_cull.hlsl"
         } else if entry == "anchor_trees" {
             "shaders/forest_anchor.hlsl"
         } else if entry.starts_with("land_")

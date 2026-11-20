@@ -24,13 +24,61 @@ macro_rules! shader {
 pub(crate) use shader;
 pub const TERRAIN_TEXTURES_ROOT: u32 = 8;
 pub const GRASS_PATCHES_ROOT: u32 = 4;
-pub const GRASS_BASE_ROOT: u32 = 9;
+pub const INSTANCE_BASE_ROOT: u32 = 9;
 pub const GRASS_STATS_ROOT: u32 = 10;
 pub const REFLECTION_ROOT: u32 = 11;
 pub const CASCADE_ROOT: u32 = 12;
 pub const CLOUD_SHADOW_ROOT: u32 = 13;
 pub const LANDFORMS_ROOT: u32 = 14;
 pub const DETAIL_SLOPES_ROOT: u32 = 15;
+
+pub const INDEXED_INSTANCE_STRIDE: u32 =
+    (size_of::<u32>() + size_of::<D3D12_DRAW_INDEXED_ARGUMENTS>()) as u32;
+
+pub unsafe fn instance_commands(
+    device: &ID3D12Device,
+    root: &ID3D12RootSignature,
+    mesh: bool,
+) -> Result<ID3D12CommandSignature> {
+    let mesh_args = [D3D12_INDIRECT_ARGUMENT_DESC {
+        Type: D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
+        ..Default::default()
+    }];
+    let indexed_args = [
+        D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT,
+            Anonymous: D3D12_INDIRECT_ARGUMENT_DESC_0 {
+                Constant: D3D12_INDIRECT_ARGUMENT_DESC_0_1 {
+                    RootParameterIndex: INSTANCE_BASE_ROOT,
+                    DestOffsetIn32BitValues: 0,
+                    Num32BitValuesToSet: 1,
+                },
+            },
+        },
+        D3D12_INDIRECT_ARGUMENT_DESC {
+            Type: D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED,
+            ..Default::default()
+        },
+    ];
+    let (arguments, byte_stride): (&[_], usize) = if mesh {
+        (&mesh_args, size_of::<D3D12_DISPATCH_MESH_ARGUMENTS>())
+    } else {
+        (&indexed_args, INDEXED_INSTANCE_STRIDE as usize)
+    };
+    let mut commands = None;
+    device.CreateCommandSignature(
+        &D3D12_COMMAND_SIGNATURE_DESC {
+            ByteStride: byte_stride as u32,
+            NumArgumentDescs: arguments.len() as u32,
+            pArgumentDescs: arguments.as_ptr(),
+            NodeMask: 0,
+        },
+        (!mesh).then_some(root),
+        &mut commands,
+    )?;
+
+    Ok(commands.unwrap())
+}
 
 pub fn root_descriptor(kind: D3D12_ROOT_PARAMETER_TYPE, register: u32) -> D3D12_ROOT_PARAMETER {
     D3D12_ROOT_PARAMETER {
@@ -106,7 +154,7 @@ unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
     params.push(table(2));
     debug_assert_eq!(params.len() as u32, TERRAIN_TEXTURES_ROOT);
     params.push(table(3));
-    debug_assert_eq!(params.len() as u32, GRASS_BASE_ROOT);
+    debug_assert_eq!(params.len() as u32, INSTANCE_BASE_ROOT);
     params.push(D3D12_ROOT_PARAMETER {
         ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
         ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
@@ -277,8 +325,10 @@ pub struct ScenePipelines {
 }
 
 pub struct AlpinePipelines {
-    pub anchor_root: ID3D12RootSignature,
+    pub forest_root: ID3D12RootSignature,
     pub anchor_trees: ID3D12PipelineState,
+    pub cull_forest: ID3D12PipelineState,
+    pub forest_draw: ID3D12CommandSignature,
     pub land: SurfacePipelines,
     pub lake: SurfacePipelines,
     pub pine: SurfacePipelines,
@@ -509,12 +559,12 @@ impl Pipelines {
                     Constants: D3D12_ROOT_CONSTANTS {
                         ShaderRegister: 1,
                         RegisterSpace: 0,
-                        Num32BitValues: 1,
+                        Num32BitValues: 3,
                     },
                 },
                 ..Default::default()
             };
-            let anchor_root = serialize_signature(
+            let forest_root = serialize_signature(
                 device,
                 &D3D12_ROOT_SIGNATURE_DESC {
                     NumParameters: params.len() as u32,
@@ -523,11 +573,13 @@ impl Pipelines {
                 },
             )?;
             let mut anchor_desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                pRootSignature: ManuallyDrop::new(Some(anchor_root.clone())),
+                pRootSignature: ManuallyDrop::new(Some(forest_root.clone())),
                 CS: shader!("anchor_trees"),
                 ..Default::default()
             };
             let anchor_trees = device.CreateComputePipelineState(&anchor_desc);
+            anchor_desc.CS = shader!("cull_forest");
+            let cull_forest = device.CreateComputePipelineState(&anchor_desc);
             ManuallyDrop::drop(&mut anchor_desc.pRootSignature);
             let surface = |vs, ps| {
                 SurfacePipelines::new(states(true, false, SCENE_FORMAT), ps, |desc, pixel| {
@@ -536,8 +588,10 @@ impl Pipelines {
             };
             let reflection = |vs, ps| graphics(states(true, false, SCENE_FORMAT), vs, ps, true);
             Some(AlpinePipelines {
-                anchor_root,
+                forest_root,
                 anchor_trees: anchor_trees?,
+                cull_forest: cull_forest?,
+                forest_draw: instance_commands(device, &root, false)?,
                 land: surface(shader!("land_vs"), shader!("land_ps"))?,
                 lake: surface(shader!("lake_vs"), shader!("lake_ps"))?,
                 pine: surface(shader!("pine_vs"), shader!("pine_ps"))?,

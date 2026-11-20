@@ -130,7 +130,7 @@ pub struct Frame {
     pub view_projection: [f32; 16],
     pub model: [f32; 16],
     pub light_projection: [[f32; 16]; SHADOW_CASCADES],
-    camera: [f32; 4],
+    pub camera: [f32; 4],
     pub sun: [f32; 4],
     pub grass: [f32; 4],
     pub output: [f32; 4],

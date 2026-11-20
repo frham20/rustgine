@@ -15,6 +15,7 @@ struct Surface {
 
 cbuffer AlpineDraw : register(b1) { uint drawFlags; } // Low bits: camera, shadow, mirror. Bit 2: billboard.
 StructuredBuffer<float4> trees : register(t2);
+cbuffer ForestDraw : register(b2) { uint firstTree; }
 
 Surface projectSurface(float3 world, float3 normal, float3 base) {
     Surface o;
@@ -49,7 +50,7 @@ GBuffer land_ps(Surface input) {
 }
 
 Surface pine_vs(Vertex v, uint instance : SV_InstanceID) {
-    float4 tree = trees[instance];
+    float4 tree = trees[firstTree + instance];
     float seed = frac(tree.w * 13.198);
     bool bark = dot(v.n, v.n) > 2;
     bool card = (drawFlags & 4) != 0;
