@@ -1,6 +1,6 @@
 # Rustgine Â· Direct3D 12 engine plan
 
-Launch `target/release/rustgine.exe` on Windows to explore a 5 km × 5 km valley. A teal cube spins with its bottom face two metres above the ground at its centre. Wind-animated grass grows on the active terrain triangles around the camera. The scene uses linear floating-point lighting and the display’s SDR or HDR output transform.
+Launch `target/release/rustgine.exe` for the alpine lake overlook. Use `--scene meadow` to explore the original 5 km × 5 km valley. A teal cube spins with its bottom face two metres above the ground at its centre. Wind-animated grass grows on the active terrain triangles around the camera. The scene uses linear floating-point lighting and the display’s SDR or HDR output transform.
 
 The demo now includes procedural grass. The feature plan records how to select the render path, reproduce the captures, and verify the meadow. [Procedural grass implementation and verification](GRASS_RENDERING_PLAN.md)
 
@@ -36,7 +36,7 @@ cargo build --release --locked
 | Use the software adapter | `cargo run --locked -- --warp` |
 | Disable grass in the shared scene | `cargo run --locked -- --grass-path off` |
 | Fly over the 5 km Ã— 5 km terrain | `cargo run --release --locked -- --terrain` |
-| Save a repeatable SDR preview and measure scene-linear highlights | `cargo run --locked -- --time 0 --capture target/reference.ppm` |
+| Save a repeatable SDR preview and measure scene-linear highlights | `cargo run --locked -- --scene meadow --time 0 --capture target/reference.ppm` |
 
 ## Terrain scene
 

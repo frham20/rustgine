@@ -1,5 +1,7 @@
+mod alpine;
 mod cloud_noise;
 mod imgui;
+mod sampled_texture;
 mod scene;
 mod terrain_textures;
 
@@ -9,9 +11,12 @@ use crate::{
     capture::{GpuMark, Readback, SceneTimer},
     display::{choose_device, supports_mesh_shaders, supports_tearing, Output},
     gpu::*,
-    grass::{Grass, GrassPath, GrassSettings},
-    pipeline::{Pipelines, SurfacePass, TERRAIN_TEXTURES_ROOT},
-    scene::{Animation, Frame},
+    grass::{Grass, GrassSettings},
+    pipeline::{
+        Pipelines, SurfacePass, CASCADE_ROOT, CLOUD_SHADOW_ROOT, LANDFORMS_ROOT, REFLECTION_ROOT,
+        TERRAIN_TEXTURES_ROOT,
+    },
+    scene::{Animation, CloudQuality, Frame, SceneOptions, SHADOW_CASCADES},
     terrain::LodFeedback,
     AppResult,
 };
@@ -33,8 +38,12 @@ const BUFFER_COUNT: usize = 2;
 const COLOR_RTV: usize = BUFFER_COUNT;
 const GBUFFER_RTV: usize = COLOR_RTV + 1;
 const CLOUD_RTV: usize = GBUFFER_RTV + GBUFFER_FORMATS.len();
+const MIRROR_RTV: usize = CLOUD_RTV + 1;
+const CLOUD_SHADOW_RTV: usize = MIRROR_RTV + 1;
+const CLOUD_SHADOW_SIZE: u32 = 256;
 const DEPTH_DSV: usize = 0;
 const SHADOW_DSV: usize = 1;
+const MIRROR_DSV: usize = SHADOW_DSV + SHADOW_CASCADES;
 const COLOR_SRV: usize = 0;
 const SHADOW_SRV: usize = 1;
 const GBUFFER_SRV: usize = SHADOW_SRV + 1;
@@ -43,6 +52,10 @@ const TERRAIN_TEXTURES_SRV: usize = DEPTH_SRV + 1;
 const IMGUI_FONT_SRV: usize = TERRAIN_TEXTURES_SRV + 1;
 const CLOUD_NOISE_SRV: usize = IMGUI_FONT_SRV + 1;
 const CLOUD_SRV: usize = CLOUD_NOISE_SRV + 1;
+const MIRROR_SRV: usize = CLOUD_SRV + 1;
+const CLOUD_SHADOW_SRV: usize = MIRROR_SRV + 1;
+const DETAIL_SLOPES_SRV: usize = CLOUD_SHADOW_SRV + 1;
+const LANDFORMS_SRV: usize = DETAIL_SLOPES_SRV + 1;
 pub const SHADOW_MAP_SIZES: [(u32, &str); 4] = [
     (512, "512 x 512"),
     (1024, "1024 x 1024"),
@@ -85,11 +98,37 @@ pub struct Hud<'a> {
 }
 
 struct Targets {
+    reflection: ID3D12Resource,
+    _reflection_depth: ID3D12Resource,
     clouds: ID3D12Resource,
     back: Vec<ID3D12Resource>,
     color: ID3D12Resource,
     gbuffer: Vec<ID3D12Resource>,
     depth: ID3D12Resource,
+}
+
+unsafe fn create_cloud_target(
+    device: &ID3D12Device,
+    rtv: &Descriptors,
+    srv: &Descriptors,
+    [width, height]: [u32; 2],
+    divisor: u32,
+) -> Result<ID3D12Resource> {
+    let clouds = resource(
+        device,
+        D3D12_HEAP_TYPE_DEFAULT,
+        &texture(
+            width.div_ceil(divisor),
+            height.div_ceil(divisor),
+            SCENE_FORMAT,
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+        ),
+        SAMPLE_STATE,
+        None,
+    )?;
+    device.CreateRenderTargetView(&clouds, None, rtv.cpu(CLOUD_RTV));
+    device.CreateShaderResourceView(&clouds, None, srv.cpu(CLOUD_SRV));
+    Ok(clouds)
 }
 
 impl Targets {
@@ -99,8 +138,8 @@ impl Targets {
         rtv: &Descriptors,
         dsv: &Descriptors,
         srv: &Descriptors,
-        width: u32,
-        height: u32,
+        [width, height]: [u32; 2],
+        cloud_divisor: u32,
     ) -> Result<Self> {
         let mut back = Vec::with_capacity(BUFFER_COUNT);
         for i in 0..BUFFER_COUNT {
@@ -128,7 +167,8 @@ impl Targets {
         )?;
         device.CreateRenderTargetView(&color, None, rtv.cpu(COLOR_RTV));
         device.CreateShaderResourceView(&color, None, srv.cpu(COLOR_SRV));
-        let clouds = resource(
+        let clouds = create_cloud_target(device, rtv, srv, [width, height], cloud_divisor)?;
+        let reflection = resource(
             device,
             D3D12_HEAP_TYPE_DEFAULT,
             &texture(
@@ -140,8 +180,21 @@ impl Targets {
             SAMPLE_STATE,
             None,
         )?;
-        device.CreateRenderTargetView(&clouds, None, rtv.cpu(CLOUD_RTV));
-        device.CreateShaderResourceView(&clouds, None, srv.cpu(CLOUD_SRV));
+        device.CreateRenderTargetView(&reflection, None, rtv.cpu(MIRROR_RTV));
+        device.CreateShaderResourceView(&reflection, None, srv.cpu(MIRROR_SRV));
+        let reflection_depth = resource(
+            device,
+            D3D12_HEAP_TYPE_DEFAULT,
+            &texture(
+                width.div_ceil(4),
+                height.div_ceil(4),
+                DEPTH_FORMAT,
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+            ),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            Some(&depth_clear(CAMERA_DEPTH_CLEAR)),
+        )?;
+        device.CreateDepthStencilView(&reflection_depth, None, dsv.cpu(MIRROR_DSV));
         let mut gbuffer = Vec::with_capacity(GBUFFER_FORMATS.len());
         for (i, format) in GBUFFER_FORMATS.into_iter().enumerate() {
             let attachment = resource(
@@ -173,10 +226,12 @@ impl Targets {
                 D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
             ),
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
-            Some(&depth_clear()),
+            Some(&depth_clear(CAMERA_DEPTH_CLEAR)),
         )?;
         create_depth_views(device, &depth, dsv.cpu(DEPTH_DSV), srv.cpu(DEPTH_SRV));
         Ok(Self {
+            reflection,
+            _reflection_depth: reflection_depth,
             clouds,
             back,
             color,
@@ -191,20 +246,50 @@ unsafe fn create_shadow(
     dsv: &Descriptors,
     srv: &Descriptors,
     size: u32,
+    layers: usize,
 ) -> Result<ID3D12Resource> {
+    let mut desc = texture(
+        size,
+        size,
+        DXGI_FORMAT_R32_TYPELESS,
+        D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+    );
+    desc.DepthOrArraySize = layers as u16;
     let shadow = resource(
         device,
         D3D12_HEAP_TYPE_DEFAULT,
-        &texture(
-            size,
-            size,
-            DXGI_FORMAT_R32_TYPELESS,
-            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-        ),
+        &desc,
         SAMPLE_STATE,
-        Some(&depth_clear()),
+        Some(&depth_clear(SHADOW_DEPTH_CLEAR)),
     )?;
-    create_depth_views(device, &shadow, dsv.cpu(SHADOW_DSV), srv.cpu(SHADOW_SRV));
+    for layer in 0..layers {
+        let view = D3D12_DEPTH_STENCIL_VIEW_DESC {
+            Format: DEPTH_FORMAT,
+            ViewDimension: D3D12_DSV_DIMENSION_TEXTURE2DARRAY,
+            Anonymous: D3D12_DEPTH_STENCIL_VIEW_DESC_0 {
+                Texture2DArray: D3D12_TEX2D_ARRAY_DSV {
+                    FirstArraySlice: layer as u32,
+                    ArraySize: 1,
+                    MipSlice: 0,
+                },
+            },
+            ..Default::default()
+        };
+        device.CreateDepthStencilView(&shadow, Some(&view), dsv.cpu(SHADOW_DSV + layer));
+    }
+    let view = D3D12_SHADER_RESOURCE_VIEW_DESC {
+        Format: DXGI_FORMAT_R32_FLOAT,
+        ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2DARRAY,
+        Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
+        Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
+            Texture2DArray: D3D12_TEX2D_ARRAY_SRV {
+                ArraySize: layers as u32,
+                MipLevels: 1,
+                ..Default::default()
+            },
+        },
+    };
+    device.CreateShaderResourceView(&shadow, Some(&view), srv.cpu(SHADOW_SRV));
     Ok(shadow)
 }
 
@@ -248,9 +333,13 @@ pub struct Renderer {
     srv: Descriptors,
     targets: Option<Targets>,
     shadow: ID3D12Resource,
+    cloud_shadow: ID3D12Resource,
+    cloud_quality: CloudQuality,
+    _landforms: ID3D12Resource,
     shadow_size: u32,
     overlay: Overlay,
     _terrain_textures: ID3D12Resource,
+    _detail_slopes: ID3D12Resource,
     _cloud_noise: ID3D12Resource,
     pipes: Pipelines,
     scene: RenderScene,
@@ -268,8 +357,7 @@ impl Renderer {
         [width, height]: [u32; 2],
         warp: bool,
         force_sdr: bool,
-        grass_path: GrassPath,
-        grass_full_density: bool,
+        options: SceneOptions,
         imgui: &mut Context,
     ) -> Result<Self> {
         let mut debug: Option<ID3D12Debug> = None;
@@ -283,7 +371,7 @@ impl Renderer {
         }
         let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))?;
         let device = choose_device(&factory, warp)?;
-        let grass_path = grass_path.resolve(supports_mesh_shaders(&device))?;
+        let grass_path = options.grass_path.resolve(supports_mesh_shaders(&device))?;
         let queue: ID3D12CommandQueue =
             device.CreateCommandQueue(&D3D12_COMMAND_QUEUE_DESC::default())?;
         let swap_flags = if supports_tearing(&factory) {
@@ -311,13 +399,17 @@ impl Renderer {
         let rtv = Descriptors::new(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-            CLOUD_RTV as u32 + 1,
+            CLOUD_SHADOW_RTV as u32 + 1,
         )?;
-        let dsv = Descriptors::new(&device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 2)?;
+        let dsv = Descriptors::new(
+            &device,
+            D3D12_DESCRIPTOR_HEAP_TYPE_DSV,
+            MIRROR_DSV as u32 + 1,
+        )?;
         let srv = Descriptors::new(
             &device,
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-            CLOUD_SRV as u32 + 1,
+            LANDFORMS_SRV as u32 + 1,
         )?;
         let mut slots = Vec::new();
         let bytes = size_of::<Frame>()
@@ -342,22 +434,79 @@ impl Renderer {
             &slots[0].allocator,
             None,
         )?;
-        let (pipes, scene_pipelines) = Pipelines::new(&device, grass_path)?;
+        let (pipes, scene_pipelines) = Pipelines::new(&device, grass_path, options.alpine)?;
         let mut staging = Vec::new();
         let noise = cloud_noise::load(&device, &list, srv.cpu(CLOUD_NOISE_SRV), &mut staging)?;
-        let terrain_textures =
-            terrain_textures::load(&device, &list, srv.cpu(TERRAIN_TEXTURES_SRV), &mut staging)?;
+        let terrain_textures = terrain_textures::load(
+            &device,
+            &list,
+            srv.cpu(TERRAIN_TEXTURES_SRV),
+            &mut staging,
+            terrain_textures::ALBEDO,
+        )?;
+        let detail_slopes = terrain_textures::load(
+            &device,
+            &list,
+            srv.cpu(DETAIL_SLOPES_SRV),
+            &mut staging,
+            terrain_textures::DETAIL_SLOPES,
+        )?;
         let scene = RenderScene::new(
             &device,
             &list,
             &pipes.root,
             scene_pipelines,
             slots.len(),
-            grass_full_density,
+            options,
             &mut staging,
         )?;
         println!("Grass path: {grass_path}");
-        let shadow = create_shadow(&device, &dsv, &srv, DEFAULT_SHADOW_SIZE)?;
+        let shadow = create_shadow(
+            &device,
+            &dsv,
+            &srv,
+            DEFAULT_SHADOW_SIZE,
+            if options.alpine { SHADOW_CASCADES } else { 1 },
+        )?;
+        let cloud_shadow = resource(
+            &device,
+            D3D12_HEAP_TYPE_DEFAULT,
+            &texture(
+                CLOUD_SHADOW_SIZE,
+                CLOUD_SHADOW_SIZE,
+                DXGI_FORMAT_R8_UNORM,
+                D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+            ),
+            SAMPLE_STATE,
+            None,
+        )?;
+        device.CreateRenderTargetView(&cloud_shadow, None, rtv.cpu(CLOUD_SHADOW_RTV));
+        device.CreateShaderResourceView(&cloud_shadow, None, srv.cpu(CLOUD_SHADOW_SRV));
+        let (landform_side, landforms) = if options.alpine {
+            (
+                crate::terrain::alpine::LANDFORM_SIDE,
+                crate::terrain::alpine::landform_maps(&scene.terrain),
+            )
+        } else {
+            (1, [vec![0; 4], vec![0; 4]])
+        };
+        let layers = landforms.map(|rgba| sampled_texture::rgba_mips(rgba, landform_side, false));
+        let mut desc = texture(
+            landform_side as u32,
+            landform_side as u32,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            D3D12_RESOURCE_FLAG_NONE,
+        );
+        desc.DepthOrArraySize = layers.len() as u16;
+        desc.MipLevels = (landform_side.ilog2() + 1) as u16;
+        let landforms = sampled_texture::upload_mips(
+            &device,
+            &list,
+            srv.cpu(LANDFORMS_SRV),
+            &mut staging,
+            &desc,
+            &layers.each_ref().map(Vec::as_slice),
+        )?;
         imgui::configure_backend(imgui);
         let overlay = Overlay::new(
             &device,
@@ -392,9 +541,13 @@ impl Renderer {
             srv,
             targets: None,
             shadow,
+            cloud_shadow,
+            cloud_quality: CloudQuality::default(),
+            _landforms: landforms,
             shadow_size: DEFAULT_SHADOW_SIZE,
             overlay,
             _terrain_textures: terrain_textures,
+            _detail_slopes: detail_slopes,
             _cloud_noise: noise,
             pipes,
             scene,
@@ -466,8 +619,8 @@ impl Renderer {
             &self.rtv,
             &self.dsv,
             &self.srv,
-            width,
-            height,
+            [width, height],
+            self.cloud_quality.resolution_divisor,
         )?);
         if self.width == 0 || self.output != output {
             println!(
@@ -505,10 +658,18 @@ impl Renderer {
             D3D12_RESOURCE_STATE_DEPTH_WRITE,
         );
         self.viewport(self.shadow_size, self.shadow_size);
-        let depth = self.dsv.cpu(SHADOW_DSV);
-        list.OMSetRenderTargets(0, None, false, Some(&depth));
-        list.ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
-        self.scene.draw_shadow(list);
+        let layers = if self.scene.alpine.is_some() {
+            SHADOW_CASCADES
+        } else {
+            1
+        };
+        for cascade in 0..layers {
+            let depth = self.dsv.cpu(SHADOW_DSV + cascade);
+            list.OMSetRenderTargets(0, None, false, Some(&depth));
+            list.ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, SHADOW_DEPTH_CLEAR, 0, &[]);
+            list.SetGraphicsRoot32BitConstant(CASCADE_ROOT, cascade as u32, 0);
+            self.scene.draw_shadow(list, cascade);
+        }
         transition(
             list,
             &self.shadow,
@@ -526,7 +687,8 @@ impl Renderer {
             D3D12_RESOURCE_STATE_RENDER_TARGET,
         );
         list.OMSetRenderTargets(1, Some(&self.rtv.cpu(CLOUD_RTV)), false, None);
-        self.viewport(self.width.div_ceil(4), self.height.div_ceil(4));
+        let divisor = self.cloud_quality.resolution_divisor;
+        self.viewport(self.width.div_ceil(divisor), self.height.div_ceil(divisor));
         list.SetGraphicsRootDescriptorTable(TERRAIN_TEXTURES_ROOT, self.srv.gpu(CLOUD_NOISE_SRV));
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list.SetPipelineState(&self.pipes.clouds);
@@ -538,6 +700,59 @@ impl Renderer {
             SAMPLE_STATE,
         );
         self.viewport(self.width, self.height);
+    }
+
+    unsafe fn cloud_shadow_pass(&self, alpine: &alpine::AlpineScene) {
+        let list = &self.list;
+        transition(
+            list,
+            &self.cloud_shadow,
+            SAMPLE_STATE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        );
+        self.viewport(CLOUD_SHADOW_SIZE, CLOUD_SHADOW_SIZE);
+        list.OMSetRenderTargets(1, Some(&self.rtv.cpu(CLOUD_SHADOW_RTV)), false, None);
+        list.SetGraphicsRootDescriptorTable(TERRAIN_TEXTURES_ROOT, self.srv.gpu(CLOUD_NOISE_SRV));
+        list.SetPipelineState(alpine.cloud_shadow());
+        list.SetGraphicsRoot32BitConstant(1, CLOUD_SHADOW_SIZE, 0);
+        list.DrawInstanced(3, 1, 0, 0);
+        transition(
+            list,
+            &self.cloud_shadow,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            SAMPLE_STATE,
+        );
+    }
+
+    unsafe fn reflection_pass(&self, targets: &Targets, alpine: &alpine::AlpineScene) {
+        let list = &self.list;
+        transition(
+            list,
+            &targets.reflection,
+            SAMPLE_STATE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+        );
+        self.viewport(self.width.div_ceil(4), self.height.div_ceil(4));
+        let color = self.rtv.cpu(MIRROR_RTV);
+        let depth = self.dsv.cpu(MIRROR_DSV);
+        list.OMSetRenderTargets(1, Some(&color), false, None);
+        list.SetGraphicsRootDescriptorTable(TERRAIN_TEXTURES_ROOT, self.srv.gpu(CLOUD_NOISE_SRV));
+        list.SetPipelineState(alpine.sky_reflection());
+        list.DrawInstanced(3, 1, 0, 0);
+        list.ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, CAMERA_DEPTH_CLEAR, 0, &[]);
+        list.OMSetRenderTargets(1, Some(&color), false, Some(&depth));
+        list.SetGraphicsRootDescriptorTable(
+            TERRAIN_TEXTURES_ROOT,
+            self.srv.gpu(TERRAIN_TEXTURES_SRV),
+        );
+        list.SetGraphicsRootDescriptorTable(3, self.srv.gpu(SHADOW_SRV));
+        alpine.reflection(list, &self.scene.terrain);
+        transition(
+            list,
+            &targets.reflection,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            SAMPLE_STATE,
+        );
     }
 
     unsafe fn lighting_pass(&self, targets: &Targets) {
@@ -560,6 +775,7 @@ impl Renderer {
         list.SetGraphicsRootDescriptorTable(3, self.srv.gpu(SHADOW_SRV));
         list.SetGraphicsRootDescriptorTable(7, self.srv.gpu(GBUFFER_SRV));
         list.SetGraphicsRootDescriptorTable(2, self.srv.gpu(CLOUD_SRV));
+        list.SetGraphicsRootDescriptorTable(REFLECTION_ROOT, self.srv.gpu(MIRROR_SRV));
         list.SetPipelineState(&self.pipes.lighting);
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         list.DrawInstanced(3, 1, 0, 0);
@@ -588,7 +804,7 @@ impl Renderer {
         self.viewport(self.width, self.height);
         let color = self.rtv.cpu(COLOR_RTV);
         let depth = self.dsv.cpu(DEPTH_DSV);
-        list.ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, 1.0, 0, &[]);
+        list.ClearDepthStencilView(depth, D3D12_CLEAR_FLAG_DEPTH, CAMERA_DEPTH_CLEAR, 0, &[]);
         let base_pass = if mode == RenderMode::WireframeOnly {
             list.ClearRenderTargetView(color, &WIREFRAME_BACKGROUND, None);
             // Write solid depth so hidden edges stay out of the wireframe.
@@ -664,6 +880,30 @@ impl Renderer {
         self.scene.grass.as_mut().map(|grass| &mut grass.settings)
     }
 
+    pub fn cloud_quality(&self) -> CloudQuality {
+        self.cloud_quality
+    }
+
+    pub fn has_cloud_shadows(&self) -> bool {
+        self.scene.alpine.is_some()
+    }
+
+    pub unsafe fn set_cloud_quality(&mut self, quality: CloudQuality) -> Result<()> {
+        if quality.resolution_divisor != self.cloud_quality.resolution_divisor {
+            // The descriptors and old target may still be in use by the GPU.
+            self.idle()?;
+            self.targets.as_mut().unwrap().clouds = create_cloud_target(
+                &self.device,
+                &self.rtv,
+                &self.srv,
+                [self.width, self.height],
+                quality.resolution_divisor,
+            )?;
+        }
+        self.cloud_quality = quality;
+        Ok(())
+    }
+
     pub fn shadow_size(&self) -> u32 {
         self.shadow_size
     }
@@ -672,7 +912,12 @@ impl Renderer {
         if size != self.shadow_size {
             // Both descriptors may be referenced by submitted command lists.
             self.idle()?;
-            self.shadow = create_shadow(&self.device, &self.dsv, &self.srv, size)?;
+            let layers = if self.scene.alpine.is_some() {
+                SHADOW_CASCADES
+            } else {
+                1
+            };
+            self.shadow = create_shadow(&self.device, &self.dsv, &self.srv, size, layers)?;
             self.shadow_size = size;
             println!("Shadow map: {size} x {size}.");
         }
@@ -701,6 +946,15 @@ impl Renderer {
             self.scene.terrain.approximate_height(glam::Vec2::ZERO),
         );
         frame.fps_hud = hud.fps;
+        frame.cloud_quality = self.cloud_quality;
+        if let Some(scene) = &mut self.scene.alpine {
+            frame.configure_alpine(camera, self.shadow_size);
+            scene.prepare(
+                camera.eye,
+                glam::Mat4::from_cols_array(&frame.view_projection),
+                &frame.light_projection,
+            );
+        }
         if let Some(grass) = &self.scene.grass {
             frame.grass[1..].copy_from_slice(&grass.settings.color_scale());
         }
@@ -712,12 +966,21 @@ impl Renderer {
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::Start);
         }
-        self.scene.terrain.prepare(
+        let terrain_changed = self.scene.terrain.prepare(
             list,
             slot.constants.GetGPUVirtualAddress(),
             frame.terrain_lod_view(),
             &mut slot.lod_feedback,
         )?;
+        if terrain_changed {
+            if let Some(alpine) = &self.scene.alpine {
+                alpine.anchor_trees(
+                    list,
+                    slot.constants.GetGPUVirtualAddress(),
+                    &self.scene.terrain,
+                );
+            }
+        }
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::TerrainReady);
         }
@@ -736,13 +999,33 @@ impl Renderer {
         list.SetGraphicsRootSignature(&self.pipes.root);
         list.SetDescriptorHeaps(&[Some(self.srv.heap.clone())]);
         list.SetGraphicsRootConstantBufferView(0, slot.constants.GetGPUVirtualAddress());
+        list.SetGraphicsRoot32BitConstant(CASCADE_ROOT, 0, 0);
+        list.SetGraphicsRootDescriptorTable(
+            crate::pipeline::DETAIL_SLOPES_ROOT,
+            self.srv.gpu(DETAIL_SLOPES_SRV),
+        );
+        list.SetGraphicsRootDescriptorTable(LANDFORMS_ROOT, self.srv.gpu(LANDFORMS_SRV));
         list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         let targets = self.targets.as_ref().unwrap();
         if mode != RenderMode::WireframeOnly && frame.sun[1] > 0.0 {
             self.shadow_pass();
+            if self.cloud_quality.shadow_steps > 0 && frame.sun[1] > 0.025 {
+                if let Some(alpine) = &self.scene.alpine {
+                    self.cloud_shadow_pass(alpine);
+                }
+            }
         }
+        list.SetGraphicsRootDescriptorTable(CLOUD_SHADOW_ROOT, self.srv.gpu(CLOUD_SHADOW_SRV));
         if let Some(timer) = &timer {
             timer.mark(list, GpuMark::ShadowsReady);
+        }
+        if mode != RenderMode::WireframeOnly {
+            if let Some(alpine) = &self.scene.alpine {
+                self.reflection_pass(targets, alpine);
+            }
+        }
+        if let Some(timer) = &timer {
+            timer.mark(list, GpuMark::ReflectionReady);
         }
         self.scene_pass(targets, i, mode, timer.as_ref());
         let back = &targets.back[i];
@@ -837,10 +1120,16 @@ impl Renderer {
                 path.display()
             );
             if let Some(timer) = timer {
-                let [prepare, grass_generate, shadows, surfaces, grass_ms, clouds, resolve, output] =
+                let [prepare, grass_generate, shadows, reflection, surfaces, grass_ms, clouds, resolve, output] =
                     timer.pass_milliseconds(self.queue.GetTimestampFrequency()?)?;
-                let scene_ms =
-                    prepare + grass_generate + shadows + surfaces + grass_ms + clouds + resolve;
+                let scene_ms = prepare
+                    + grass_generate
+                    + shadows
+                    + reflection
+                    + surfaces
+                    + grass_ms
+                    + clouds
+                    + resolve;
                 let triangles = readback_u32(&terrain_count)?;
                 println!("Terrain: {triangles} active triangles.");
                 let (patches, blades_triangles) = grass_counts
@@ -858,7 +1147,7 @@ impl Renderer {
                     RenderMode::WireframeOnly => "wireframe",
                 };
                 println!(", {grass_ms:.3} ms grass geometry.");
-                println!("GPU passes (ms): terrain {prepare:.3}, grass generation {grass_generate:.3}, shadows {shadows:.3}, surfaces {surfaces:.3}, grass {grass_ms:.3}, clouds {clouds:.3}, {resolve_label} {resolve:.3}, output {output:.3}, total {:.3}.", scene_ms + output);
+                println!("GPU passes (ms): terrain {prepare:.3}, grass generation {grass_generate:.3}, shadows {shadows:.3}, reflection {reflection:.3}, surfaces {surfaces:.3}, grass {grass_ms:.3}, clouds {clouds:.3}, {resolve_label} {resolve:.3}, output {output:.3}, total {:.3}.", scene_ms + output);
             }
         }
         self.check_debug()?;

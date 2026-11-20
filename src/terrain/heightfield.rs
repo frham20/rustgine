@@ -35,7 +35,7 @@ fn lattice(x: i32, y: i32, seed: u32) -> f32 {
     ((h ^ (h >> 16)) >> 8) as f32 / 16_777_215.0
 }
 
-fn noise(p: Vec2, seed: u32) -> f32 {
+pub(super) fn noise(p: Vec2, seed: u32) -> f32 {
     let cell = p.floor();
     let IVec2 { x, y } = cell.as_ivec2();
     let t = p - cell;
@@ -47,7 +47,7 @@ fn noise(p: Vec2, seed: u32) -> f32 {
     lo + (hi - lo) * v
 }
 
-fn fractal(mut p: Vec2, seed: u32) -> f32 {
+pub(super) fn fractal(mut p: Vec2, seed: u32) -> f32 {
     let mut elevation = 0.0;
     let mut weight = 0.54;
     for octave in 0..5 {
@@ -202,13 +202,18 @@ fn elevation(p: Vec2) -> f32 {
 }
 
 impl Heightfield {
-    pub fn generate() -> Self {
+    pub fn generate(alpine: bool) -> Self {
+        let height = if alpine {
+            super::alpine::height
+        } else {
+            elevation
+        };
         let mut field = Self {
             samples: (0..=GRID_CELLS)
                 .flat_map(|z| {
                     (0..=GRID_CELLS).map(move |x| {
                         let p = Vec2::new(x as f32, z as f32) * GRID_STEP;
-                        elevation(p - Vec2::splat(SIDE_METERS * 0.5))
+                        height(p - Vec2::splat(SIDE_METERS * 0.5))
                     })
                 })
                 .collect(),
@@ -280,7 +285,7 @@ mod tests {
 
     #[test]
     fn bisectors_tile_the_heightfield_on_aligned_power_of_two_edges() {
-        let field = Heightfield::generate();
+        let field = Heightfield::generate(false);
         assert_eq!(GRID_CELLS as f32 * GRID_STEP, 5_000.0);
         let mut edges = HashMap::<_, u32>::new();
         let mut double_area = 0;

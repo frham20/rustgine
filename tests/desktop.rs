@@ -25,6 +25,12 @@ fn capture_warp_scene(label: &str, args: &[&str]) -> (String, Vec<u8>) {
 }
 
 fn capture_with_keys(label: &str, args: &[&str], keys: &[VIRTUAL_KEY]) -> (String, Vec<u8>) {
+    let mut meadow = vec!["--scene", "meadow"];
+    meadow.extend_from_slice(args);
+    capture_scene(label, &meadow, keys)
+}
+
+fn capture_scene(label: &str, args: &[&str], keys: &[VIRTUAL_KEY]) -> (String, Vec<u8>) {
     let path = std::env::temp_dir().join(format!("rustgine-{}-{label}.ppm", std::process::id()));
     let mut child = Command::new(DEMO)
         .arg("--warp")
@@ -83,6 +89,59 @@ fn ppm_image(raw: &[u8]) -> (usize, usize, &[[u8; 3]]) {
 }
 
 // Captures exercise both shader passes and the real swap-chain readback on WARP.
+#[test]
+#[ignore = "requires D3D12 WARP and a Windows desktop session"]
+fn alpine_overlook_draws_water_and_forested_shores_without_grass() {
+    let (log, raw) = capture_scene(
+        "alpine-overlook",
+        &["--grass-path", "off", "--time", "0"],
+        &[],
+    );
+    assert!(
+        log.contains("conifers in") && log.contains("reflection "),
+        "{log}"
+    );
+    let (w, h, pixels) = ppm_image(&raw);
+    // Look below the skyline and above the foreground meadow. Water has a
+    // blue-green body, while nearby conifer silhouettes have much darker blue.
+    let mut water = 0;
+    let mut forest = 0;
+    for row in pixels.chunks_exact(w).skip(h * 4 / 9).take(h / 4) {
+        for &[r, g, b] in &row[..w * 3 / 4] {
+            water += usize::from(g.saturating_sub(r) > 35 && b >= g && g > 85);
+            forest += usize::from(g.saturating_sub(r) > 8 && g >= b && b < 65);
+        }
+    }
+    assert!(water > w * h / 40, "missing lake, {water} water pixels");
+    assert!(
+        forest > w * h / 250,
+        "missing conifers, {forest} forest pixels"
+    );
+
+    // The camera and sun are fixed. With grass disabled, this opaque hillside
+    // can change lighting only when the projected cloud field moves.
+    let (_, later) = capture_scene(
+        "alpine-cloud-drift",
+        &["--grass-path", "off", "--time", "260"],
+        &[],
+    );
+    let (w2, h2, later) = ppm_image(&later);
+    assert_eq!((w, h), (w2, h2));
+    let mut changed = 0;
+    let mut samples = 0;
+    for y in h * 4 / 5..h * 19 / 20 {
+        for x in w * 3 / 4..w * 19 / 20 {
+            let i = y * w + x;
+            changed += usize::from(pixels[i][1].abs_diff(later[i][1]) > 4);
+            samples += 1;
+        }
+    }
+    assert!(
+        changed > samples / 3,
+        "cloud shadows moved on {changed}/{samples} hillside pixels"
+    );
+}
+
 #[test]
 #[ignore = "requires D3D12 WARP and a Windows desktop session"]
 fn captures_show_a_lit_cube_rotating_above_the_terrain() {

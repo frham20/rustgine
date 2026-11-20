@@ -18,7 +18,7 @@ Surface scene_vs(Vertex input) {
 }
 
 float4 shadow_vs(Vertex input) : SV_Position {
-    return mul(lightProjection, mul(model, float4(input.position, 1)));
+    return mul(lightProjection[shadowSlice], mul(model, float4(input.position, 1)));
 }
 
 GBuffer scene_ps(Surface input) {

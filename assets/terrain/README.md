@@ -2,7 +2,9 @@
 
 The sixteen 512 × 512 sRGB BC1 DDS tiles each contain a complete mip chain. The renderer embeds them in one texture array. It uses elevation and slope to blend meadow, organic soil, mineral deposits, and exposed rock, with world-aligned sampling at different physical scales. Each tile wraps independently.
 
-The DDS files use the DX10 header to record the sRGB format. [Microsoft DDS format guide](https://learn.microsoft.com/en-us/windows/win32/direct3ddds/dx-graphics-dds-pguide)
+The weathered limestone, laminated shale and coarse scree also have signed RG8 detail-slope tiles. Run `python tools/bake_alpine_normals.py` with Pillow and NumPy to rebuild them from the albedos. Slopes are averaged in linear space down to 1 × 1. All nineteen tiles have ten mip levels and use the 16× anisotropic terrain sampler.
+
+The DDS files use the DX10 header to record the texture format. [Microsoft DDS format guide](https://learn.microsoft.com/en-us/windows/win32/direct3ddds/dx-graphics-dds-pguide)
 
 The built-in ImageGen tool generated one source image per tile. The source images were cropped to square tiles, corrected for periodic edges, matched to the terrain palette, and converted to mipmapped DDS.
 

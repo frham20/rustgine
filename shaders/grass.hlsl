@@ -1,45 +1,8 @@
-#include "terrain_common.hlsli"
+#include "terrain_surface.hlsli"
 #include "terrain_materials.hlsli"
 #include "gbuffer.hlsli"
 #include "grass_common.hlsli"
 
-// Zero for internal nodes, slot + 1 for the triangles in this frame's draws.
-StructuredBuffer<uint> activeLeaves : register(t7);
-
-float cross2(float2 a, float2 b) { return a.x * b.y - a.y * b.x; }
-
-float4 groundSurface(float2 worldXZ) {
-    float2 p = worldXZ / terrainParams.x + 0.5 * terrainGrid.x;
-    uint tiles = uint(sqrt(float(terrainGrid.y / 2)));
-    uint span = terrainGrid.x / tiles;
-    uint2 tile = min(uint2(p / span), tiles - 1);
-    float2 nw = float2(tile * span), se = nw + span;
-    float2 local = p - nw;
-    bool upper = local.x > local.y;
-    uint root = (2 * (tile.y * tiles + tile.x) + uint(upper)) * terrainGrid.z;
-    float2 a = upper ? se : nw;
-    float2 b = upper ? float2(se.x, nw.y) : float2(nw.x, se.y);
-    float2 c = upper ? nw : se;
-    uint node = 1;
-    // Follow the same longest-edge bisections as the terrain draw. A blade
-    // follows its current triangle even while the GPU splits or merges it.
-    while (node < terrainGrid.z / 2 && activeLeaves[root + node] == 0) {
-        float2 midpoint = (a + c) * 0.5;
-        bool right = cross2(midpoint - b, p - b) > 0;
-        float2 nextA = right ? c : b;
-        c = right ? b : a;
-        b = midpoint;
-        a = nextA;
-        node = 2 * node + uint(right);
-    }
-    float area = cross2(b - a, c - a);
-    float u = cross2(p - a, c - a) / area;
-    float v = cross2(b - a, p - a) / area;
-    float4 av = resolvedVertices[gridIndex(uint2(a))];
-    float4 bv = resolvedVertices[gridIndex(uint2(b))];
-    float4 cv = resolvedVertices[gridIndex(uint2(c))];
-    return av + u * (bv - av) + v * (cv - av);
-}
 
 StructuredBuffer<Patch> patches : register(t2);
 ByteAddressBuffer grassDrawData : register(t13);
@@ -87,7 +50,14 @@ bool growBlade(Patch patch, uint bladeIndex, out Blade blade) {
     float4 ground = groundSurface(root);
     blade.root = float3(root.x, ground.x, root.y);
     // Thin the blades across mixed materials using a seed that stays fixed as the camera moves.
-    float coverage = meadowCoverage(terrainMaterials(blade.root, normalize(ground.yzw)));
+    float3 groundNormal = normalize(ground.yzw);
+    float coverage = meadowCoverage(terrainMaterials(blade.root, groundNormal, 0));
+    if (lakeLevel > 0 && coverage > 0) {
+        // Grass roots stay fixed to the local basin, independently of camera LOD.
+        float2 mask = landforms.SampleLevel(landformSampler, float3(root / 5000 + 0.5, 0), 0).rg;
+        float2 deposit = alpineDeposits(blade.root, groundNormal, mask, 0);
+        coverage *= (1 - deposit.x) * (1 - deposit.y);
+    }
     if (coverage < 1.0 && random01(seed + 7) >= coverage) {
         blade = (Blade)0;
         return false;
@@ -213,7 +183,7 @@ GBuffer grass_ps(GrassVertex input, bool front : SV_IsFrontFace) {
     float3 base = meadowBladeColor(variation);
     base *= lerp(0.30, 1.0, pow(saturate(input.bladeHeight), 1.5));
     if (input.groundBlend > 0.0) {
-        base = lerp(base, meadowCanopyColor(meadowVariation(input.world.xz)), input.groundBlend);
+        base = lerp(base, meadowCanopyColor(meadowVariation(input.world.xz, 0)), input.groundBlend);
     }
     return materialSample(tintMeadow(base, grassParams.yzw), normal, 0, 0.96, MATERIAL_MATTE_GROUND);
 }

@@ -11,6 +11,45 @@ const ROTATION_SPEED: f64 = 0.55;
 // Both wind oscillations in grass.hlsl repeat at this period.
 const WIND_PERIOD: f64 = TAU / 0.65;
 const MINUTES_PER_DAY: f64 = 24.0 * 60.0;
+const CAMERA_NEAR: f32 = 0.12;
+pub const SHADOW_CASCADES: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct CloudQuality {
+    pub resolution_divisor: u32,
+    pub view_steps: u32,
+    pub light_steps: u32,
+    pub shadow_steps: u32,
+}
+
+impl Default for CloudQuality {
+    fn default() -> Self {
+        Self {
+            resolution_divisor: 4,
+            view_steps: 40,
+            light_steps: 4,
+            shadow_steps: 16,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SceneOptions {
+    pub alpine: bool,
+    pub grass_path: crate::grass::GrassPath,
+    pub grass_full_density: bool,
+}
+
+impl Default for SceneOptions {
+    fn default() -> Self {
+        Self {
+            alpine: true,
+            grass_path: Default::default(),
+            grass_full_density: false,
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct Animation {
@@ -88,9 +127,9 @@ pub struct Vertex {
 
 #[repr(C)]
 pub struct Frame {
-    view_projection: [f32; 16],
+    pub view_projection: [f32; 16],
     pub model: [f32; 16],
-    pub light_projection: [f32; 16],
+    pub light_projection: [[f32; 16]; SHADOW_CASCADES],
     camera: [f32; 4],
     pub sun: [f32; 4],
     pub grass: [f32; 4],
@@ -100,6 +139,8 @@ pub struct Frame {
     pub fps_hud: [u32; 4],
     depth_projection: [f32; 4],
     terrain_frustum: [[f32; 4]; 6],
+    shadow_ranges: [f32; SHADOW_CASCADES],
+    pub cloud_quality: CloudQuality,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -119,8 +160,14 @@ impl Frame {
         ground: f32,
     ) -> Self {
         let aspect = width as f32 / height as f32;
-        let projection =
-            Mat4::perspective_rh(56f32.to_radians(), aspect, 0.12, camera.draw_distance);
+        // Reverse camera depth so D32_FLOAT keeps enough precision for world-space
+        // reconstruction on distant terrain. Light projections stay conventional.
+        let projection = Mat4::perspective_rh(
+            56f32.to_radians(),
+            aspect,
+            camera.draw_distance,
+            CAMERA_NEAR,
+        );
         let view_projection = projection * camera.view();
         let sun = animation.sun_direction();
         // Keep enough shadow texels across the two-metre cube in the near view.
@@ -133,7 +180,7 @@ impl Frame {
         Self {
             view_projection: view_projection.to_cols_array(),
             model: model.to_cols_array(),
-            light_projection: (light_projection * light_view).to_cols_array(),
+            light_projection: [(light_projection * light_view).to_cols_array(); SHADOW_CASCADES],
             camera: camera.eye.extend(1.0).to_array(),
             sun: sun.extend(5.0).to_array(),
             grass: [animation.wind_time as f32, 1.0, 1.0, 1.0],
@@ -150,14 +197,49 @@ impl Frame {
                 projection.z_axis.z,
                 projection.w_axis.z,
                 animation.cloud_wind as f32,
-                0.0,
+                -1.0e6,
             ],
             terrain_frustum: frustum_planes(view_projection).map(|plane| plane.to_array()),
+            shadow_ranges: [0.0; SHADOW_CASCADES],
+            cloud_quality: CloudQuality::default(),
         }
     }
 
     pub fn pixels_at_one_meter(&self) -> f32 {
         self.terrain_params[2]
+    }
+
+    pub fn configure_alpine(&mut self, camera: &Camera, shadow_size: u32) {
+        self.depth_projection[3] = terrain::alpine::LAKE_LEVEL;
+        let far = camera.draw_distance;
+        self.shadow_ranges = [
+            (0.20 * far).min(120.0),
+            (0.45 * far).min(650.0),
+            (0.72 * far).min(3_200.0),
+            far,
+        ];
+        let sun = Vec3::from_array([self.sun[0], self.sun[1], self.sun[2]]);
+        let up = if sun.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
+        let basis = Mat4::look_to_rh(Vec3::ZERO, -sun, up);
+        let center = basis.transform_point3(camera.eye);
+        for (matrix, radius) in self.light_projection.iter_mut().zip(self.shadow_ranges) {
+            // Nested spheres also cover off-camera land visible in the lake mirror.
+            // Snap in a fixed light basis so camera motion and rotation keep texels stable.
+            let extent = radius * 1.02;
+            let texel = 2.0 * extent / shadow_size as f32;
+            let x = (center.x / texel).round() * texel;
+            let y = (center.y / texel).round() * texel;
+            // Leave room toward the sun for ridges casting into a nearby slice.
+            let projection = Mat4::orthographic_rh(
+                x - extent,
+                x + extent,
+                y - extent,
+                y + extent,
+                -center.z - extent - 3500.0,
+                -center.z + extent,
+            );
+            *matrix = (projection * basis).to_cols_array();
+        }
     }
 
     pub fn terrain_lod_view(&self) -> TerrainLodView {
@@ -208,6 +290,72 @@ pub fn cube_geometry() -> Vec<Vertex> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camera_depth_reconstructs_distant_shadow_receivers() {
+        let camera = Camera::alpine_overlook();
+        let frame = Frame::new(
+            [1280, 720],
+            &camera,
+            Animation::new(0.0),
+            0.0,
+            false,
+            80.0,
+            0.0,
+        );
+        let projection = Mat4::from_cols_array(&frame.view_projection) * camera.view().inverse();
+        for depth in [CAMERA_NEAR, 1.0, 1_000.0, 8_000.0, camera.draw_distance] {
+            let clip = projection * Vec3::new(0.0, 0.0, -depth).extend(1.0);
+            let device_depth = (clip.z / clip.w).clamp(0.0, 1.0);
+            let [z, w, ..] = frame.depth_projection;
+            // Match deferred_ps, including the f32 depth-buffer round trip.
+            let reconstructed = w / (device_depth + z);
+            assert!(
+                (reconstructed - depth).abs() < 0.005,
+                "depth {depth}: {reconstructed}"
+            );
+        }
+        let near = projection.project_point3(Vec3::NEG_Z * CAMERA_NEAR).z;
+        let far = projection
+            .project_point3(Vec3::NEG_Z * camera.draw_distance)
+            .z;
+        assert!((near - 1.0).abs() < 1e-3 && far.abs() < 1e-6);
+    }
+
+    #[test]
+    fn alpine_shadow_cascades_cover_their_range_and_snap_to_texels() {
+        let mut camera = Camera::alpine_overlook();
+        for far in [100.0, 18_000.0] {
+            camera.draw_distance = far;
+            let mut frame = Frame::new(
+                [1280, 720],
+                &camera,
+                Animation::new(0.0),
+                0.0,
+                false,
+                80.0,
+                0.0,
+            );
+            frame.configure_alpine(&camera, 2048);
+            assert_eq!(frame.shadow_ranges[3], far);
+            assert!(frame.shadow_ranges.windows(2).all(|pair| pair[0] < pair[1]));
+            for (radius, matrix) in frame.shadow_ranges.into_iter().zip(frame.light_projection) {
+                let light = Mat4::from_cols_array(&matrix);
+                for axis in [Vec3::X, Vec3::Y, Vec3::Z, -Vec3::X, -Vec3::Y, -Vec3::Z] {
+                    let q = light.transform_point3(camera.eye + axis * radius);
+                    assert!(q.x.abs() <= 1.0 && q.y.abs() <= 1.0 && (0.0..=1.0).contains(&q.z));
+                }
+            }
+            camera.eye = Vec3::ZERO;
+            frame.configure_alpine(&camera, 2048);
+            let aligned = frame.light_projection;
+            camera.eye += Vec3::X * 0.0005;
+            frame.configure_alpine(&camera, 2048);
+            for (a, b) in aligned.into_iter().zip(frame.light_projection) {
+                assert_eq!(&a[12..14], &b[12..14]);
+            }
+        }
+    }
 
     #[test]
     fn time_of_day_advances_at_simulated_rate_and_wraps() {

@@ -18,6 +18,8 @@ pub const GBUFFER_FORMATS: [DXGI_FORMAT; 2] = [
 ];
 pub const SDR_FORMAT: DXGI_FORMAT = DXGI_FORMAT_R8G8B8A8_UNORM;
 pub const DEPTH_FORMAT: DXGI_FORMAT = DXGI_FORMAT_D32_FLOAT;
+pub const CAMERA_DEPTH_CLEAR: f32 = 0.0;
+pub const SHADOW_DEPTH_CLEAR: f32 = 1.0;
 pub const SAMPLE: DXGI_SAMPLE_DESC = DXGI_SAMPLE_DESC {
     Count: 1,
     Quality: 0,
@@ -203,12 +205,12 @@ pub fn texture(
     }
 }
 
-pub fn depth_clear() -> D3D12_CLEAR_VALUE {
+pub fn depth_clear(depth: f32) -> D3D12_CLEAR_VALUE {
     D3D12_CLEAR_VALUE {
         Format: DEPTH_FORMAT,
         Anonymous: D3D12_CLEAR_VALUE_0 {
             DepthStencil: D3D12_DEPTH_STENCIL_VALUE {
-                Depth: 1.0,
+                Depth: depth,
                 Stencil: 0,
             },
         },
@@ -240,6 +242,24 @@ pub unsafe fn upload_to_gpu<T>(
     final_state: D3D12_RESOURCE_STATES,
     staging_buffers: &mut Vec<ID3D12Resource>,
 ) -> Result<ID3D12Resource> {
+    upload_to_gpu_with_flags(
+        device,
+        list,
+        values,
+        final_state,
+        D3D12_RESOURCE_FLAG_NONE,
+        staging_buffers,
+    )
+}
+
+pub unsafe fn upload_to_gpu_with_flags<T>(
+    device: &ID3D12Device,
+    list: &ID3D12GraphicsCommandList,
+    values: &[T],
+    final_state: D3D12_RESOURCE_STATES,
+    flags: D3D12_RESOURCE_FLAGS,
+    staging_buffers: &mut Vec<ID3D12Resource>,
+) -> Result<ID3D12Resource> {
     let bytes = size_of_val(values) as u64;
     let staging = buffer(
         device,
@@ -248,11 +268,12 @@ pub unsafe fn upload_to_gpu<T>(
         D3D12_RESOURCE_STATE_GENERIC_READ,
     )?;
     upload(&staging, values)?;
-    let gpu = buffer(
+    let gpu = buffer_with_flags(
         device,
         bytes,
         D3D12_HEAP_TYPE_DEFAULT,
         D3D12_RESOURCE_STATE_COMMON,
+        flags,
     )?;
     list.CopyBufferRegion(&gpu, 0, &staging, 0, bytes);
     transition(list, &gpu, D3D12_RESOURCE_STATE_COPY_DEST, final_state);

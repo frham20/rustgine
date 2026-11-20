@@ -35,6 +35,16 @@ impl Default for Camera {
 }
 
 impl Camera {
+    pub fn alpine_overlook() -> Self {
+        let p = crate::terrain::alpine::OVERLOOK;
+        Self {
+            eye: Vec3::new(p.x, crate::terrain::alpine::height(p) + 3.5, p.y),
+            yaw: -0.39,
+            pitch: -0.14,
+            ..Self::default()
+        }
+    }
+
     fn forward(&self) -> Vec3 {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();

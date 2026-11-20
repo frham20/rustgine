@@ -17,7 +17,7 @@ use camera::Camera;
 use fps::{pace_frame, FpsCounter};
 use grass::GrassPath;
 use renderer::{Hud, RenderMode, Renderer};
-use scene::Animation;
+use scene::{Animation, SceneOptions};
 use settings::SettingsPanel;
 use std::{
     env,
@@ -52,8 +52,7 @@ struct Options {
     sdr: bool,
     capture: Option<PathBuf>,
     time: f32,
-    grass_path: GrassPath,
-    grass_full_density: bool,
+    scene: SceneOptions,
 }
 
 impl Options {
@@ -65,8 +64,16 @@ impl Options {
                 Some("--warp") => options.warp = true,
                 Some("--sdr") => options.sdr = true,
                 Some("--terrain") => {} // Compatibility alias for the default world.
+                Some("--scene") => {
+                    options.scene.alpine =
+                        match args.next().as_deref().and_then(std::ffi::OsStr::to_str) {
+                            Some("alpine") => true,
+                            Some("meadow") => false,
+                            _ => return Err("--scene expects alpine or meadow".into()),
+                        };
+                }
                 Some("--grass-path") => {
-                    options.grass_path =
+                    options.scene.grass_path =
                         match args.next().as_deref().and_then(std::ffi::OsStr::to_str) {
                             Some("auto") => GrassPath::Auto,
                             Some("mesh") => GrassPath::Mesh,
@@ -79,7 +86,7 @@ impl Options {
                             }
                         };
                 }
-                Some("--grass-full-density") => options.grass_full_density = true,
+                Some("--grass-full-density") => options.scene.grass_full_density = true,
                 Some("--capture") => {
                     options.capture = Some(
                         args.next()
@@ -98,7 +105,7 @@ impl Options {
                     }
                 }
                 Some("--help" | "-h") => {
-                    println!("rustgine [--warp] [--sdr] [--capture FILE.ppm] [--time SECONDS]\n         [--grass-path auto|mesh|instanced|off] [--grass-full-density]\nThe scene contains a floating cube and grass on a 5 km by 5 km terrain.\nWASD flies at 50 km/h. Hold Shift for 100 km/h. Click the scene for mouse look.\nF1 cycles Normal, Wireframe Overlay, and Wireframe Only.\nF3 toggles time-of-day animation at two minutes per second. F4 steps forward 15 minutes.\nF5 toggles the settings panel.\nInsert increases grass distance. Delete decreases it.\nEsc releases the mouse, then closes the window. Space pauses the cube and wind. + and - adjust exposure.");
+                    println!("rustgine [--scene alpine|meadow] [--warp] [--sdr] [--capture FILE.ppm] [--time SECONDS]\n         [--grass-path auto|mesh|instanced|off] [--grass-full-density]\nThe default alpine overlook faces a mountain lake and conifer forest. The meadow scene opens at the floating cube.\nWASD flies at 50 km/h. Hold Shift for 100 km/h. Click the scene for mouse look.\nF1 cycles Normal, Wireframe Overlay, and Wireframe Only.\nF3 toggles time-of-day animation at two minutes per second. F4 steps forward 15 minutes.\nF5 toggles the settings panel.\nInsert increases grass distance. Delete decreases it.\nEsc releases the mouse, then closes the window. Space pauses the animation. + and - adjust exposure.");
                     std::process::exit(0);
                 }
                 _ => return Err(format!("Unknown argument {}", arg.to_string_lossy()).into()),
@@ -214,8 +221,7 @@ unsafe fn run(options: &Options) -> AppResult<()> {
         [rect.right as u32, rect.bottom as u32],
         options.warp,
         options.sdr || options.capture.is_some(),
-        options.grass_path,
-        options.grass_full_density,
+        options.scene,
         &mut panel.context,
     )?;
     if options.capture.is_none() {
@@ -226,8 +232,15 @@ unsafe fn run(options: &Options) -> AppResult<()> {
     let mut display_check = previous;
     let mut fps = FpsCounter::new(previous);
     let mut playing = true;
-    let mut camera = Camera::default();
+    let mut camera = if options.scene.alpine {
+        Camera::alpine_overlook()
+    } else {
+        Camera::default()
+    };
     let mut animation = Animation::new(f64::from(options.time));
+    if options.scene.alpine {
+        animation.set_day_minutes(9.75 * 60.0);
+    }
     let mut exposure = 0.0f32;
     let mut mode = RenderMode::default();
     let mut frame = 0;

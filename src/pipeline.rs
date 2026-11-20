@@ -26,6 +26,11 @@ pub const TERRAIN_TEXTURES_ROOT: u32 = 8;
 pub const GRASS_PATCHES_ROOT: u32 = 4;
 pub const GRASS_BASE_ROOT: u32 = 9;
 pub const GRASS_STATS_ROOT: u32 = 10;
+pub const REFLECTION_ROOT: u32 = 11;
+pub const CASCADE_ROOT: u32 = 12;
+pub const CLOUD_SHADOW_ROOT: u32 = 13;
+pub const LANDFORMS_ROOT: u32 = 14;
+pub const DETAIL_SLOPES_ROOT: u32 = 15;
 
 pub fn root_descriptor(kind: D3D12_ROOT_PARAMETER_TYPE, register: u32) -> D3D12_ROOT_PARAMETER {
     D3D12_ROOT_PARAMETER {
@@ -54,13 +59,22 @@ pub unsafe fn serialize_signature(
 }
 
 unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
-    let ranges =
-        [(0, 1), (1, 1), (9, 3), (12, 1)].map(|(register, count)| D3D12_DESCRIPTOR_RANGE {
-            RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-            NumDescriptors: count,
-            BaseShaderRegister: register,
-            ..Default::default()
-        });
+    let ranges = [
+        (0, 1),
+        (1, 1),
+        (9, 3),
+        (12, 1),
+        (14, 1),
+        (15, 1),
+        (16, 1),
+        (17, 1),
+    ]
+    .map(|(register, count)| D3D12_DESCRIPTOR_RANGE {
+        RangeType: D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        NumDescriptors: count,
+        BaseShaderRegister: register,
+        ..Default::default()
+    });
     let table = |index: usize| D3D12_ROOT_PARAMETER {
         ParameterType: D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE,
         ShaderVisibility: D3D12_SHADER_VISIBILITY_PIXEL,
@@ -106,6 +120,24 @@ unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
     });
     debug_assert_eq!(params.len() as u32, GRASS_STATS_ROOT);
     params.push(root_descriptor(D3D12_ROOT_PARAMETER_TYPE_SRV, 13));
+    params.push(table(4));
+    params.push(D3D12_ROOT_PARAMETER {
+        ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_VERTEX,
+        Anonymous: D3D12_ROOT_PARAMETER_0 {
+            Constants: D3D12_ROOT_CONSTANTS {
+                ShaderRegister: 3,
+                RegisterSpace: 0,
+                Num32BitValues: 1,
+            },
+        },
+    });
+    params.push(table(5));
+    params.push(D3D12_ROOT_PARAMETER {
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        ..table(6)
+    });
+    params.push(table(7));
     let shadow_sampler = D3D12_STATIC_SAMPLER_DESC {
         Filter: D3D12_FILTER_COMPARISON_MIN_MAG_LINEAR_MIP_POINT,
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_BORDER,
@@ -122,7 +154,7 @@ unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
         AddressU: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         AddressV: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
         AddressW: D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-        MaxAnisotropy: 8,
+        MaxAnisotropy: D3D12_MAX_MAXANISOTROPY,
         ComparisonFunc: D3D12_COMPARISON_FUNC_ALWAYS,
         MaxLOD: f32::MAX,
         ShaderRegister: 1,
@@ -135,7 +167,20 @@ unsafe fn signature(device: &ID3D12Device) -> Result<ID3D12RootSignature> {
         MaxAnisotropy: 1,
         ..terrain_sampler
     };
-    let samplers = [shadow_sampler, terrain_sampler, cloud_sampler];
+    let landform_sampler = D3D12_STATIC_SAMPLER_DESC {
+        AddressU: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressV: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        AddressW: D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+        ShaderRegister: 3,
+        ShaderVisibility: D3D12_SHADER_VISIBILITY_ALL,
+        ..terrain_sampler
+    };
+    let samplers = [
+        shadow_sampler,
+        terrain_sampler,
+        cloud_sampler,
+        landform_sampler,
+    ];
     let desc = D3D12_ROOT_SIGNATURE_DESC {
         NumParameters: params.len() as u32,
         pParameters: params.as_ptr(),
@@ -228,6 +273,22 @@ pub struct ScenePipelines {
     pub cube_shadow: ID3D12PipelineState,
     pub grass: Option<GrassPipeline>,
     pub terrain: TerrainGraphics,
+    pub alpine: Option<AlpinePipelines>,
+}
+
+pub struct AlpinePipelines {
+    pub anchor_root: ID3D12RootSignature,
+    pub anchor_trees: ID3D12PipelineState,
+    pub land: SurfacePipelines,
+    pub lake: SurfacePipelines,
+    pub pine: SurfacePipelines,
+    pub pine_shadow: ID3D12PipelineState,
+    pub range_shadow: ID3D12PipelineState,
+    pub cloud_shadow: ID3D12PipelineState,
+    pub land_reflection: ID3D12PipelineState,
+    pub terrain_reflection: ID3D12PipelineState,
+    pub pine_reflection: ID3D12PipelineState,
+    pub sky_reflection: ID3D12PipelineState,
 }
 
 pub struct TerrainGraphics {
@@ -264,9 +325,9 @@ impl SurfacePipelines {
         let mut wireframe = surface.clone();
         wireframe.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
         // Bias the lines slightly toward the camera so they pass against their own surfaces.
-        wireframe.RasterizerState.DepthBias = -2;
-        wireframe.RasterizerState.SlopeScaledDepthBias = -1.0;
-        wireframe.RasterizerState.DepthBiasClamp = -0.000025;
+        wireframe.RasterizerState.DepthBias = 2;
+        wireframe.RasterizerState.SlopeScaledDepthBias = 1.0;
+        wireframe.RasterizerState.DepthBiasClamp = 0.000025;
         wireframe.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
         let blend = &mut wireframe.BlendState.RenderTarget[0];
         blend.BlendEnable = true.into();
@@ -296,6 +357,7 @@ impl Pipelines {
     pub unsafe fn new(
         device: &ID3D12Device,
         grass_path: GrassPath,
+        alpine: bool,
     ) -> Result<(Self, ScenePipelines)> {
         let root = signature(device)?;
         let layout = [(s!("POSITION"), 0), (s!("NORMAL"), 12)].map(|(semantic, offset)| {
@@ -345,7 +407,11 @@ impl Pipelines {
                     } else {
                         D3D12_DEPTH_WRITE_MASK_ZERO
                     },
-                    DepthFunc: D3D12_COMPARISON_FUNC_LESS_EQUAL,
+                    DepthFunc: if shadow {
+                        D3D12_COMPARISON_FUNC_LESS_EQUAL
+                    } else {
+                        D3D12_COMPARISON_FUNC_GREATER_EQUAL
+                    },
                     FrontFace: stencil,
                     BackFace: stencil,
                     ..Default::default()
@@ -429,11 +495,94 @@ impl Pipelines {
             )?)),
             GrassPath::Auto | GrassPath::Off => None,
         };
+        let alpine = if alpine {
+            let mut params = [
+                root_descriptor(D3D12_ROOT_PARAMETER_TYPE_CBV, 0),
+                root_descriptor(D3D12_ROOT_PARAMETER_TYPE_SRV, 7),
+                root_descriptor(D3D12_ROOT_PARAMETER_TYPE_SRV, 8),
+                root_descriptor(D3D12_ROOT_PARAMETER_TYPE_UAV, 0),
+                D3D12_ROOT_PARAMETER::default(),
+            ];
+            params[4] = D3D12_ROOT_PARAMETER {
+                ParameterType: D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
+                Anonymous: D3D12_ROOT_PARAMETER_0 {
+                    Constants: D3D12_ROOT_CONSTANTS {
+                        ShaderRegister: 1,
+                        RegisterSpace: 0,
+                        Num32BitValues: 1,
+                    },
+                },
+                ..Default::default()
+            };
+            let anchor_root = serialize_signature(
+                device,
+                &D3D12_ROOT_SIGNATURE_DESC {
+                    NumParameters: params.len() as u32,
+                    pParameters: params.as_ptr(),
+                    ..Default::default()
+                },
+            )?;
+            let mut anchor_desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+                pRootSignature: ManuallyDrop::new(Some(anchor_root.clone())),
+                CS: shader!("anchor_trees"),
+                ..Default::default()
+            };
+            let anchor_trees = device.CreateComputePipelineState(&anchor_desc);
+            ManuallyDrop::drop(&mut anchor_desc.pRootSignature);
+            let surface = |vs, ps| {
+                SurfacePipelines::new(states(true, false, SCENE_FORMAT), ps, |desc, pixel| {
+                    graphics(desc, vs, pixel, true)
+                })
+            };
+            let reflection = |vs, ps| graphics(states(true, false, SCENE_FORMAT), vs, ps, true);
+            Some(AlpinePipelines {
+                anchor_root,
+                anchor_trees: anchor_trees?,
+                land: surface(shader!("land_vs"), shader!("land_ps"))?,
+                lake: surface(shader!("lake_vs"), shader!("lake_ps"))?,
+                pine: surface(shader!("pine_vs"), shader!("pine_ps"))?,
+                pine_shadow: graphics(
+                    states(true, true, DXGI_FORMAT_UNKNOWN),
+                    shader!("pine_vs"),
+                    Default::default(),
+                    true,
+                )?,
+                range_shadow: graphics(
+                    states(true, true, DXGI_FORMAT_UNKNOWN),
+                    shader!("land_vs"),
+                    Default::default(),
+                    true,
+                )?,
+                cloud_shadow: graphics(
+                    states(false, false, DXGI_FORMAT_R8_UNORM),
+                    shader!("output_vs"),
+                    shader!("cloud_shadow_ps"),
+                    false,
+                )?,
+                land_reflection: reflection(shader!("land_vs"), shader!("land_reflection_ps"))?,
+                terrain_reflection: graphics(
+                    states(true, false, SCENE_FORMAT),
+                    shader!("terrain_vs"),
+                    shader!("terrain_reflection_ps"),
+                    false,
+                )?,
+                pine_reflection: reflection(shader!("pine_vs"), shader!("pine_reflection_ps"))?,
+                sky_reflection: graphics(
+                    states(false, false, SCENE_FORMAT),
+                    shader!("output_vs"),
+                    shader!("sky_reflection_ps"),
+                    false,
+                )?,
+            })
+        } else {
+            None
+        };
         let scene_pipelines = ScenePipelines {
             cube: scene,
             cube_shadow: shadow,
             grass,
             terrain,
+            alpine,
         };
         let lighting = graphics(
             states(false, false, SCENE_FORMAT),

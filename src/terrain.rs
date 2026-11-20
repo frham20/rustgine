@@ -1,3 +1,4 @@
+pub mod alpine;
 mod heightfield;
 
 use crate::{
@@ -34,6 +35,14 @@ const INDIRECT: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
 const COPY_SOURCE: D3D12_RESOURCE_STATES = D3D12_RESOURCE_STATE_COPY_SOURCE;
 
 pub const GRID: [u32; 4] = [GRID_CELLS, ROOT_COUNT, NODES_PER_ROOT, POOL_CAPACITY];
+
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub enum Projection {
+    Camera,
+    Shadow,
+    Reflection,
+}
 
 // One per frame slot. The renderer waits for the slot's existing fence before reuse.
 pub struct LodFeedback {
@@ -183,9 +192,10 @@ impl Terrain {
     pub unsafe fn new(
         device: &ID3D12Device,
         list: &ID3D12GraphicsCommandList,
+        alpine: bool,
         staging: &mut Vec<ID3D12Resource>,
     ) -> Result<Self> {
-        let field = Heightfield::generate();
+        let field = Heightfield::generate(alpine);
         let nodes = upload_to_gpu(device, list, &field.nodes, SRV, staging)?;
         let base_vertices = upload_to_gpu(device, list, &field.vertices(), SRV, staging)?;
         let storage = |bytes| {
@@ -241,6 +251,19 @@ impl Terrain {
         list.SetComputeRootShaderResourceView(root, self.base_vertices.GetGPUVirtualAddress());
     }
 
+    pub unsafe fn bind_active_surface(
+        &self,
+        list: &ID3D12GraphicsCommandList,
+        leaves: u32,
+        vertices: u32,
+    ) {
+        list.SetComputeRootShaderResourceView(leaves, self.leaf_slots.GetGPUVirtualAddress());
+        list.SetComputeRootShaderResourceView(
+            vertices,
+            self.resolved_vertices.GetGPUVirtualAddress(),
+        );
+    }
+
     // A single ordered direct queue owns the persistent pool and its reduction tree.
     pub unsafe fn prepare(
         &mut self,
@@ -248,7 +271,7 @@ impl Terrain {
         frame: u64,
         view: TerrainLodView,
         feedback: &mut LodFeedback,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let same_view = self.lod_view == Some(view);
         if !same_view {
             self.lod_view = Some(view);
@@ -267,7 +290,7 @@ impl Terrain {
                 feedback.generation = Some(self.generation);
             }
         }
-        Ok(())
+        Ok(!self.settled)
     }
 
     unsafe fn update_mesh(&mut self, list: &ID3D12GraphicsCommandList, frame: u64) {
@@ -372,10 +395,10 @@ impl Terrain {
         &self,
         list: &ID3D12GraphicsCommandList,
         pipeline: &ID3D12PipelineState,
-        shadow: bool,
+        projection: Projection,
     ) {
         list.SetPipelineState(pipeline);
-        list.SetGraphicsRoot32BitConstant(1, u32::from(shadow), 0);
+        list.SetGraphicsRoot32BitConstant(1, projection as u32, 0);
         for (index, resource) in [&self.leaf_slots, &self.resolved_vertices]
             .into_iter()
             .enumerate()
@@ -587,7 +610,7 @@ mod tests {
             let list: ID3D12GraphicsCommandList =
                 device.CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &allocator, None)?;
             let mut staging = Vec::new();
-            let mut terrain = Terrain::new(&device, &list, &mut staging)?;
+            let mut terrain = Terrain::new(&device, &list, false, &mut staging)?;
             let mut near = Camera::default();
             near.eye = glam::vec3(-250.0, 525.0, 2030.0);
             let mut turned = Camera::default();
@@ -595,7 +618,7 @@ mod tests {
             turned.update(glam::Vec2::ZERO, glam::vec2(1256.637, 0.0), 0.0, false);
             let mut far = Camera::default();
             far.eye.y = 2_000_000.0;
-            let field = Heightfield::generate();
+            let field = Heightfield::generate(false);
             let mut timeline = Timeline::new(&device)?;
             let mut feedback = [LodFeedback::new(&device)?, LodFeedback::new(&device)?];
             let mut slot = 0;
@@ -610,7 +633,7 @@ mod tests {
             ] {
                 let constants = buffer(
                     &device,
-                    512,
+                    size_of::<Frame>().next_multiple_of(256) as u64,
                     D3D12_HEAP_TYPE_UPLOAD,
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                 )?;

@@ -3,7 +3,7 @@ use crate::{
     fps::{DEFAULT_FPS_LIMIT, MAX_FPS_LIMIT, MIN_FPS_LIMIT},
     grass::{GrassSettings, MAX_DENSITY_PERCENT, MAX_DRAW_DISTANCE, MIN_DRAW_DISTANCE},
     renderer::{Renderer, SHADOW_MAP_SIZES},
-    scene::Animation,
+    scene::{Animation, CloudQuality},
 };
 use imgui::{Condition, ConfigFlags, Context, DrawData, Key, MouseButton, SliderFlags, Ui};
 use std::cell::{Cell, RefCell};
@@ -140,6 +140,7 @@ fn panel_key(key: VIRTUAL_KEY) -> Option<Key> {
 pub struct SettingsPanel {
     pub context: Context,
     shadow_resize_failed: bool,
+    cloud_resize_failed: bool,
     max_fps: u32,
 }
 
@@ -156,6 +157,7 @@ impl SettingsPanel {
         Self {
             context,
             shadow_resize_failed: false,
+            cloud_resize_failed: false,
             max_fps: DEFAULT_FPS_LIMIT,
         }
     }
@@ -189,6 +191,7 @@ impl SettingsPanel {
             return None;
         }
         let mut shadow_size = renderer.shadow_size();
+        let mut clouds = renderer.cloud_quality();
         ui.window("Settings")
             .position([12.0, 56.0], Condition::FirstUseEver)
             .size([390.0, 350.0], Condition::FirstUseEver)
@@ -200,6 +203,12 @@ impl SettingsPanel {
                         scene_settings(ui, animation, camera, &mut shadow_size, &mut self.max_fps);
                         if self.shadow_resize_failed {
                             ui.text_wrapped("Could not allocate the selected shadow map.");
+                        }
+                    }
+                    if let Some(_clouds) = ui.tab_item("Clouds") {
+                        cloud_settings(ui, &mut clouds, renderer.has_cloud_shadows());
+                        if self.cloud_resize_failed {
+                            ui.text_wrapped("Could not allocate the selected cloud resolution.");
                         }
                     }
                     if let Some(_grass) = ui.tab_item("Grass") {
@@ -218,7 +227,57 @@ impl SettingsPanel {
                 eprintln!("Shadow map resize failed: {error}");
             }
         }
+        if clouds != renderer.cloud_quality() {
+            let result = unsafe { renderer.set_cloud_quality(clouds) };
+            self.cloud_resize_failed = result.is_err();
+            if let Err(error) = result {
+                eprintln!("Cloud target resize failed: {error}");
+            }
+        }
         Some(self.context.render())
+    }
+}
+
+fn cloud_settings(ui: &Ui, clouds: &mut CloudQuality, has_shadows: bool) {
+    ui.text("Sky resolution");
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "Fraction of the screen width and height. Higher values sharpen cloud edges.",
+        );
+    }
+    for (index, (label, divisor)) in [("1/8", 8), ("1/4", 4), ("1/2", 2), ("Full", 1)]
+        .into_iter()
+        .enumerate()
+    {
+        if index > 0 {
+            ui.same_line();
+        }
+        ui.radio_button(label, &mut clouds.resolution_divisor, divisor);
+    }
+    ui.slider_config("Ray samples", 12, 128)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut clouds.view_steps);
+    if ui.is_item_hovered() {
+        ui.tooltip_text("More samples resolve finer shapes in the sky and reflected clouds.");
+    }
+    ui.slider_config("Lighting samples", 0, 8)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut clouds.light_steps);
+    if ui.is_item_hovered() {
+        ui.tooltip_text("Samples toward the sun. Set to 0 to skip shading within clouds.");
+    }
+    if has_shadows {
+        ui.slider_config("Cloud shadow samples", 0, 48)
+            .flags(SliderFlags::ALWAYS_CLAMP)
+            .build(&mut clouds.shadow_steps);
+        if ui.is_item_hovered() {
+            ui.tooltip_text(
+                "Samples for cloud shadows on land and water. Set to 0 to disable them.",
+            );
+        }
+    }
+    if ui.button("Reset cloud settings") {
+        *clouds = CloudQuality::default();
     }
 }
 

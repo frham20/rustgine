@@ -1,15 +1,16 @@
 #include "terrain_common.hlsli"
 #include "terrain_materials.hlsli"
 #include "gbuffer.hlsli"
+#include "lake_reflection.hlsli"
+#include "alpine_geology.hlsli"
 
-cbuffer TerrainPass : register(b1) { uint shadowPass; }
-Texture2DArray<float4> terrainTiles : register(t12);
-SamplerState terrainSampler : register(s1);
+cbuffer TerrainPass : register(b1) { uint projectionPass; }
 
 struct TerrainVertex {
     float4 position : SV_Position;
     float3 world : WORLD;
     float3 normal : NORMAL;
+    float clipHeight : SV_ClipDistance0;
 };
 
 TerrainVertex terrain_vs(uint corner : SV_VertexID) {
@@ -19,8 +20,10 @@ TerrainVertex terrain_vs(uint corner : SV_VertexID) {
     TerrainVertex output;
     output.world = world;
     output.normal = vertex.yzw;
-    output.position = shadowPass ? mul(lightProjection, float4(world, 1))
-                                 : mul(viewProjection, float4(world, 1));
+    output.clipHeight = projectionPass == 2 ? world.y - lakeLevel : 1;
+    if (projectionPass == 2) world = mirrorPoint(world);
+    output.position = projectionPass == 1 ? mul(lightProjection[shadowSlice], float4(world, 1))
+                                         : mul(viewProjection, float4(world, 1));
     return output;
 }
 
@@ -49,29 +52,30 @@ GBuffer terrain_ps(TerrainVertex input) {
     float2 xz = input.world.xz;
     // Calculate gradients before any material branches so mips stay stable at boundaries.
     float2 dx = ddx(xz), dy = ddy(xz);
-    TerrainMaterials material = terrainMaterials(input.world, n);
+    float footprint = max(length(dx), length(dy));
+    TerrainMaterials material = terrainMaterials(input.world, n, footprint);
 
     float3 base = 0;
     if (material.organic > 0.0) {
-        float variation = mottling(xz * 0.069 + float2(75, 29));
+        float variation = filteredMottling(xz * 0.069 + float2(75, 29), footprint * 0.069);
         float litter = 1.45 * variation + 0.45 * (1.0 - material.moisture) - 0.25;
         base += material.organic * sampleFamily(4, litter, 1.7, xz, dx, dy);
     }
     if (material.mineral > 0.0) {
-        float variation = mottling(xz * 0.058 + float2(34, 12));
+        float variation = filteredMottling(xz * 0.058 + float2(34, 12), footprint * 0.058);
         float gravel = 1.4 * variation + 0.42 * material.slope - 0.24;
         base += material.mineral * sampleFamily(8, gravel, 1.35, xz, dx, dy);
     }
     if (material.rock > 0.0) {
-        float variation = mottling(xz * 0.034 + float2(8, 56));
+        float variation = filteredMottling(xz * 0.034 + float2(8, 56), footprint * 0.034);
         base += material.rock * sampleFamily(12, 1.5 * variation - 0.25, 3.6, xz, dx, dy);
     }
 
     // Retain broad color variation past the distance where the texture mips average out.
-    float broadVariation = lerp(0.78, 1.12, mottling(xz * 0.007 + 7));
+    float broadVariation = lerp(0.78, 1.12, filteredMottling(xz * 0.007 + 7, footprint * 0.007));
     base *= broadVariation;
     if (material.meadow > 0.0) {
-        float variation = meadowVariation(xz);
+        float variation = meadowVariation(xz, footprint);
         float dry = 0.55 * (1.0 - material.moisture) + 1.3 * variation - 0.30;
         float3 meadow = sampleFamily(0, dry, 2.0, xz, dx, dy);
         // Give the surface the same meadow palette as the blades as their coverage thins.
@@ -83,5 +87,25 @@ GBuffer terrain_ps(TerrainVertex input) {
     }
     float roughness = dot(float4(material.meadow, material.organic, material.mineral, material.rock),
                           float4(0.97, 0.98, 0.94, 0.91));
+    if (lakeLevel > 0) {
+        // Distant slopes resolve into forest floor and broad rock faces as the
+        // individual tile variations become too small to distinguish.
+        float range = distance(camera.xyz, input.world);
+        float timber = 1 - smoothstep(lakeLevel + 350, lakeLevel + 510, input.world.y);
+        float clear = smoothstep(105, 275, length(input.world.xz - float2(1020, 1520)));
+        float grain = filteredMottling(xz * 0.004, footprint * 0.004);
+        float3 rock = lerp(float3(0.15,0.155,0.145), float3(0.31,0.30,0.255), grain);
+        float bare = smoothstep(0.32, 0.78, length(n.xz) + 0.45 * (1 - timber));
+        float3 hillside = lerp(float3(0.086, 0.141, 0.042), rock, bare);
+        hillside = lerp(hillside, float3(0.030,0.068,0.039), clear * timber * (1 - bare) * 0.86);
+        base = lerp(base, hillside * (0.86 + 0.25 * grain), 0.94 * smoothstep(140, 750, range));
+        AlpineSurface geology = alpineSurface(input.world, n, base, roughness, material.rock, projectionPass == 2 ? 0.25 : 1);
+        return materialSample(geology.color, geology.normal, 0, geology.roughness, MATERIAL_MATTE_GROUND);
+    }
     return materialSample(base, n, 0, roughness, MATERIAL_MATTE_GROUND);
+}
+
+float4 terrain_reflection_ps(TerrainVertex input) : SV_Target {
+    GBuffer ground = terrain_ps(input);
+    return reflectedLand(input.world, unpackNormal(ground.normalRoughMaterial.xy), ground.albedoMetal.rgb, ground.normalRoughMaterial.z);
 }

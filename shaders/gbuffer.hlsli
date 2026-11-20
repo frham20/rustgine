@@ -5,6 +5,7 @@ struct GBuffer {
 
 static const float MATERIAL_STANDARD = 1;
 static const float MATERIAL_MATTE_GROUND = 2;
+static const float MATERIAL_LAKE = 3;
 
 // Octahedral coordinates store a full-sphere normal in two signed channels.
 float2 octFold(float2 xy) {

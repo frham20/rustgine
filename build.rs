@@ -63,13 +63,35 @@ fn main() {
         ("terrain_seam_resolve", "cs_6_0"),
         ("terrain_vs", "vs_6_0"),
         ("terrain_ps", "ps_6_0"),
+        ("terrain_reflection_ps", "ps_6_0"),
         ("deferred_ps", "ps_6_0"),
         ("clouds_ps", "ps_6_0"),
+        ("cloud_shadow_ps", "ps_6_0"),
+        ("sky_reflection_ps", "ps_6_0"),
+        ("land_vs", "vs_6_0"),
+        ("land_ps", "ps_6_0"),
+        ("land_reflection_ps", "ps_6_0"),
+        ("pine_vs", "vs_6_0"),
+        ("anchor_trees", "cs_6_0"),
+        ("pine_ps", "ps_6_0"),
+        ("pine_reflection_ps", "ps_6_0"),
+        ("lake_vs", "vs_6_0"),
+        ("lake_ps", "ps_6_0"),
         ("imgui_vs", "vs_6_0"),
         ("imgui_ps", "ps_6_0"),
     ] {
-        let source = if matches!(entry, "deferred_ps" | "clouds_ps") {
+        let source = if matches!(
+            entry,
+            "deferred_ps" | "clouds_ps" | "sky_reflection_ps" | "cloud_shadow_ps"
+        ) {
             "shaders/deferred.hlsl"
+        } else if entry == "anchor_trees" {
+            "shaders/forest_anchor.hlsl"
+        } else if entry.starts_with("land_")
+            || entry.starts_with("pine_")
+            || entry.starts_with("lake_")
+        {
+            "shaders/alpine.hlsl"
         } else if entry.starts_with("imgui_") {
             "shaders/imgui.hlsl"
         } else if entry.starts_with("grass_") && profile == "cs_6_0" {
