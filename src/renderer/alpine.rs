@@ -321,9 +321,17 @@ struct ForestView {
     eye: [f32; 4],
 }
 
+// View order and stream layout match forest_cull.hlsl.
+const CAMERA_VIEW: usize = 0;
+const REFLECTION_VIEW: usize = 1;
+const FIRST_SHADOW_VIEW: usize = 2;
+const FOREST_VIEW_COUNT: usize = FIRST_SHADOW_VIEW + SHADOW_CASCADES;
+const LODS_PER_VIEW: usize = 2;
+const COMMAND_COUNT_BYTES: u64 = size_of::<u32>() as u64;
+
 // Each stream starts with its ExecuteIndirect count, followed by indexed commands.
 fn stream_size(stands: u32) -> u64 {
-    4 + u64::from(stands) * u64::from(INDEXED_INSTANCE_STRIDE)
+    COMMAND_COUNT_BYTES + u64::from(stands) * u64::from(INDEXED_INSTANCE_STRIDE)
 }
 
 pub(super) struct AlpineScene {
@@ -378,7 +386,7 @@ impl AlpineScene {
         )?;
         let commands = buffer_with_flags(
             device,
-            (SHADOW_CASCADES + 2) as u64 * 2 * stream_size(stand_count),
+            (FOREST_VIEW_COUNT * LODS_PER_VIEW) as u64 * stream_size(stand_count),
             D3D12_HEAP_TYPE_DEFAULT,
             D3D12_RESOURCE_STATE_COMMON,
             D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
@@ -399,7 +407,7 @@ impl AlpineScene {
         })
     }
 
-    pub(super) unsafe fn prepare(
+    pub(super) unsafe fn prepare_forest_draws(
         &mut self,
         list: &ID3D12GraphicsCommandList,
         constants: u64,
@@ -428,7 +436,7 @@ impl AlpineScene {
         let params = [self.stand_count, self.pine.count, self.billboard.count];
         list.SetComputeRoot32BitConstants(4, 3, params.as_ptr().cast(), 0);
         list.SetPipelineState(&self.pipes.cull_forest);
-        list.Dispatch((SHADOW_CASCADES + 2) as u32, 1, 1);
+        list.Dispatch(FOREST_VIEW_COUNT as u32, 1, 1);
         transition(list, &self.commands, uav, indirect);
         self.last_view = Some(view);
         true
@@ -453,17 +461,22 @@ impl AlpineScene {
         transition(list, &self.instances, uav, srv);
     }
 
-    unsafe fn trees(&self, list: &ID3D12GraphicsCommandList, view: usize, projection: Projection) {
+    unsafe fn draw_trees(
+        &self,
+        list: &ID3D12GraphicsCommandList,
+        view: usize,
+        projection: Projection,
+    ) {
         list.SetGraphicsRootShaderResourceView(4, self.instances.GetGPUVirtualAddress());
         for (lod, mesh) in [&self.pine, &self.billboard].into_iter().enumerate() {
             mesh.bind(list);
             list.SetGraphicsRoot32BitConstant(1, projection as u32 | ((lod as u32) << 2), 0);
-            let count_offset = (2 * view + lod) as u64 * stream_size(self.stand_count);
+            let count_offset = (LODS_PER_VIEW * view + lod) as u64 * stream_size(self.stand_count);
             list.ExecuteIndirect(
                 &self.pipes.forest_draw,
                 self.stand_count,
                 &self.commands,
-                count_offset + 4,
+                count_offset + COMMAND_COUNT_BYTES,
                 Some(&self.commands),
                 count_offset,
             );
@@ -477,7 +490,7 @@ impl AlpineScene {
         list.SetPipelineState(self.pipes.lake.get(pass));
         self.lake.draw(list);
         list.SetPipelineState(self.pipes.pine.get(pass));
-        self.trees(list, 0, Projection::Camera);
+        self.draw_trees(list, CAMERA_VIEW, Projection::Camera);
     }
 
     pub(super) unsafe fn shadows(&self, list: &ID3D12GraphicsCommandList, cascade: usize) {
@@ -485,7 +498,7 @@ impl AlpineScene {
         list.SetPipelineState(&self.pipes.range_shadow);
         self.ranges.draw(list);
         list.SetPipelineState(&self.pipes.pine_shadow);
-        self.trees(list, 2 + cascade, Projection::Shadow);
+        self.draw_trees(list, FIRST_SHADOW_VIEW + cascade, Projection::Shadow);
     }
 
     pub(super) unsafe fn reflection(&self, list: &ID3D12GraphicsCommandList, terrain: &Terrain) {
@@ -493,6 +506,6 @@ impl AlpineScene {
         list.SetPipelineState(&self.pipes.land_reflection);
         self.ranges.draw(list);
         list.SetPipelineState(&self.pipes.pine_reflection);
-        self.trees(list, 1, Projection::Reflection);
+        self.draw_trees(list, REFLECTION_VIEW, Projection::Reflection);
     }
 }

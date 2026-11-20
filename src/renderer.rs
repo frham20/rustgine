@@ -971,9 +971,10 @@ impl Renderer {
             &mut slot.lod_feedback,
         )?;
         if let Some(alpine) = &mut self.scene.alpine {
-            let forest_changed =
-                alpine.prepare(list, slot.constants.GetGPUVirtualAddress(), &frame);
-            if forest_changed || terrain_changed {
+            let forest_draws_changed =
+                alpine.prepare_forest_draws(list, slot.constants.GetGPUVirtualAddress(), &frame);
+            // Tree selection and terrain LOD both affect shadow casters.
+            if forest_draws_changed || terrain_changed {
                 self.alpine_shadows_valid = false;
             }
             if terrain_changed {
