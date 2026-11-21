@@ -344,6 +344,12 @@ pub struct TerrainGraphics {
     pub shadow: ID3D12PipelineState,
 }
 
+enum RasterFaces {
+    TwoSided,
+    Front,
+    MirroredFront,
+}
+
 #[derive(Clone, Copy)]
 pub enum SurfacePass {
     Geometry,
@@ -433,7 +439,13 @@ impl Pipelines {
             StencilPassOp: D3D12_STENCIL_OP_KEEP,
             StencilFunc: D3D12_COMPARISON_FUNC_ALWAYS,
         };
-        let states = |depth: bool, shadow: bool, format| {
+        let states = |depth: bool, shadow: bool, format, faces| {
+            let (cull_mode, front_counter_clockwise) = match faces {
+                RasterFaces::TwoSided => (D3D12_CULL_MODE_NONE, false),
+                RasterFaces::Front => (D3D12_CULL_MODE_BACK, true),
+                // The lake mirror flips the winding of reflected world geometry.
+                RasterFaces::MirroredFront => (D3D12_CULL_MODE_BACK, false),
+            };
             let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
                 BlendState: D3D12_BLEND_DESC {
                     RenderTarget: [blend; 8],
@@ -441,7 +453,8 @@ impl Pipelines {
                 },
                 RasterizerState: D3D12_RASTERIZER_DESC {
                     FillMode: D3D12_FILL_MODE_SOLID,
-                    CullMode: D3D12_CULL_MODE_NONE,
+                    CullMode: cull_mode,
+                    FrontCounterClockwise: front_counter_clockwise.into(),
                     DepthClipEnable: true.into(),
                     DepthBias: if shadow { 100 } else { 0 },
                     SlopeScaledDepthBias: if shadow { 1.25 } else { 0.0 },
@@ -492,13 +505,13 @@ impl Pipelines {
             result
         };
         let sdr = graphics(
-            states(false, false, SDR_FORMAT),
+            states(false, false, SDR_FORMAT, RasterFaces::TwoSided),
             shader!("output_vs"),
             shader!("output_ps"),
             false,
         )?;
         let hdr = graphics(
-            states(false, false, SCENE_FORMAT),
+            states(false, false, SCENE_FORMAT, RasterFaces::TwoSided),
             shader!("output_vs"),
             shader!("output_ps"),
             false,
@@ -508,24 +521,24 @@ impl Pipelines {
                 |desc, pixel| graphics(desc, shader!("terrain_vs"), pixel, false);
             TerrainGraphics {
                 surface: SurfacePipelines::new(
-                    states(true, false, SCENE_FORMAT),
+                    states(true, false, SCENE_FORMAT, RasterFaces::Front),
                     shader!("terrain_ps"),
                     terrain_pipeline,
                 )?,
                 shadow: terrain_pipeline(
-                    states(true, true, DXGI_FORMAT_UNKNOWN),
+                    states(true, true, DXGI_FORMAT_UNKNOWN, RasterFaces::Front),
                     Default::default(),
                 )?,
             }
         };
         let grass = match grass_path {
             GrassPath::Mesh => Some(GrassPipeline::Mesh(SurfacePipelines::new(
-                states(true, false, SCENE_FORMAT),
+                states(true, false, SCENE_FORMAT, RasterFaces::TwoSided),
                 shader!("grass_ps"),
                 |desc, pixel| mesh_pipeline(device, &root, &desc, pixel),
             )?)),
             GrassPath::Instanced => Some(GrassPipeline::Instanced(SurfacePipelines::new(
-                states(true, false, SCENE_FORMAT),
+                states(true, false, SCENE_FORMAT, RasterFaces::TwoSided),
                 shader!("grass_ps"),
                 |desc, pixel| graphics(desc, shader!("grass_vs"), pixel, false),
             )?)),
@@ -567,48 +580,65 @@ impl Pipelines {
             anchor_desc.CS = shader!("cull_forest");
             let cull_forest = device.CreateComputePipelineState(&anchor_desc);
             ManuallyDrop::drop(&mut anchor_desc.pRootSignature);
-            let surface = |vs, ps| {
-                SurfacePipelines::new(states(true, false, SCENE_FORMAT), ps, |desc, pixel| {
-                    graphics(desc, vs, pixel, true)
-                })
+            let surface = |vs, ps, faces| {
+                SurfacePipelines::new(
+                    states(true, false, SCENE_FORMAT, faces),
+                    ps,
+                    |desc, pixel| graphics(desc, vs, pixel, true),
+                )
             };
-            let reflection = |vs, ps| graphics(states(true, false, SCENE_FORMAT), vs, ps, true);
+            let reflection =
+                |vs, ps, faces| graphics(states(true, false, SCENE_FORMAT, faces), vs, ps, true);
             AlpinePipelines {
                 forest_root,
                 anchor_trees: anchor_trees?,
                 cull_forest: cull_forest?,
                 forest_draw: instance_commands(device, &root, false)?,
-                land: surface(shader!("land_vs"), shader!("land_ps"))?,
-                lake: surface(shader!("lake_vs"), shader!("lake_ps"))?,
-                pine: surface(shader!("pine_vs"), shader!("pine_ps"))?,
+                land: surface(shader!("land_vs"), shader!("land_ps"), RasterFaces::Front)?,
+                lake: surface(shader!("lake_vs"), shader!("lake_ps"), RasterFaces::Front)?,
+                // The trunk shares its draw with thin foliage. Both the crown and
+                // the folded billboard silhouettes need two-sided rasterization.
+                pine: surface(
+                    shader!("pine_vs"),
+                    shader!("pine_ps"),
+                    RasterFaces::TwoSided,
+                )?,
                 pine_shadow: graphics(
-                    states(true, true, DXGI_FORMAT_UNKNOWN),
+                    states(true, true, DXGI_FORMAT_UNKNOWN, RasterFaces::TwoSided),
                     shader!("pine_vs"),
                     Default::default(),
                     true,
                 )?,
                 range_shadow: graphics(
-                    states(true, true, DXGI_FORMAT_UNKNOWN),
+                    states(true, true, DXGI_FORMAT_UNKNOWN, RasterFaces::Front),
                     shader!("land_vs"),
                     Default::default(),
                     true,
                 )?,
                 cloud_shadow: graphics(
-                    states(false, false, DXGI_FORMAT_R8_UNORM),
+                    states(false, false, DXGI_FORMAT_R8_UNORM, RasterFaces::TwoSided),
                     shader!("output_vs"),
                     shader!("cloud_shadow_ps"),
                     false,
                 )?,
-                land_reflection: reflection(shader!("land_vs"), shader!("land_reflection_ps"))?,
+                land_reflection: reflection(
+                    shader!("land_vs"),
+                    shader!("land_reflection_ps"),
+                    RasterFaces::MirroredFront,
+                )?,
                 terrain_reflection: graphics(
-                    states(true, false, SCENE_FORMAT),
+                    states(true, false, SCENE_FORMAT, RasterFaces::MirroredFront),
                     shader!("terrain_vs"),
                     shader!("terrain_reflection_ps"),
                     false,
                 )?,
-                pine_reflection: reflection(shader!("pine_vs"), shader!("pine_reflection_ps"))?,
+                pine_reflection: reflection(
+                    shader!("pine_vs"),
+                    shader!("pine_reflection_ps"),
+                    RasterFaces::TwoSided,
+                )?,
                 sky_reflection: graphics(
-                    states(false, false, SCENE_FORMAT),
+                    states(false, false, SCENE_FORMAT, RasterFaces::TwoSided),
                     shader!("output_vs"),
                     shader!("sky_reflection_ps"),
                     false,
@@ -621,13 +651,13 @@ impl Pipelines {
             alpine,
         };
         let lighting = graphics(
-            states(false, false, SCENE_FORMAT),
+            states(false, false, SCENE_FORMAT, RasterFaces::TwoSided),
             shader!("output_vs"),
             shader!("deferred_ps"),
             false,
         )?;
         let clouds = graphics(
-            states(false, false, SCENE_FORMAT),
+            states(false, false, SCENE_FORMAT, RasterFaces::TwoSided),
             shader!("output_vs"),
             shader!("clouds_ps"),
             false,
