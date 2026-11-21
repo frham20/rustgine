@@ -19,6 +19,7 @@ Press F5 and open **Clouds** to change sky resolution, ray samples, lighting sam
 - ImGUI integration for debug operations
 
 ## Screenshots
+<img width="638" height="360" alt="image" src="https://github.com/user-attachments/assets/01488493-b052-4a34-be4b-ccd731965ec7" />
 <img width="833" height="520" alt="image" src="https://github.com/user-attachments/assets/8edefe45-0260-4e7a-9c90-75b8007a7dc0" />
 <img width="1072" height="701" alt="image" src="https://github.com/user-attachments/assets/249ae336-7bec-4b64-9b10-67cf006ec8ca" />
 <img width="1070" height="694" alt="image" src="https://github.com/user-attachments/assets/7c03f63f-f506-452f-9c26-5cf4cafc6e6b" />
