@@ -16,7 +16,7 @@ use crate::{
         Pipelines, SurfacePass, CASCADE_ROOT, CLOUD_SHADOW_ROOT, LANDFORMS_ROOT, REFLECTION_ROOT,
         TERRAIN_TEXTURES_ROOT,
     },
-    scene::{Animation, CloudQuality, Frame, SceneOptions, SHADOW_CASCADES},
+    scene::{Animation, CloudQuality, Frame, SceneOptions, SunShaftQuality, SHADOW_CASCADES},
     terrain::LodFeedback,
     AppResult,
 };
@@ -335,6 +335,7 @@ pub struct Renderer {
     shadow: ID3D12Resource,
     cloud_shadow: ID3D12Resource,
     cloud_quality: CloudQuality,
+    sun_shaft_quality: SunShaftQuality,
     _landforms: ID3D12Resource,
     shadow_size: u32,
     alpine_shadows_valid: bool,
@@ -532,6 +533,7 @@ impl Renderer {
             shadow,
             cloud_shadow,
             cloud_quality: CloudQuality::default(),
+            sun_shaft_quality: SunShaftQuality::default(),
             _landforms: landforms,
             shadow_size: DEFAULT_SHADOW_SIZE,
             alpine_shadows_valid: false,
@@ -866,6 +868,10 @@ impl Renderer {
         self.scene.grass.as_mut().map(|grass| &mut grass.settings)
     }
 
+    pub fn sun_shaft_quality(&mut self) -> &mut SunShaftQuality {
+        &mut self.sun_shaft_quality
+    }
+
     pub fn cloud_quality(&self) -> CloudQuality {
         self.cloud_quality
     }
@@ -925,6 +931,7 @@ impl Renderer {
         );
         frame.fps_hud = hud.fps;
         frame.cloud_quality = self.cloud_quality;
+        frame.sun_shaft_quality = self.sun_shaft_quality;
         frame.configure_alpine(camera, self.shadow_size);
         if let Some(grass) = &self.scene.grass {
             frame.grass[1..].copy_from_slice(&grass.settings.color_scale());

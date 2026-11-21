@@ -31,6 +31,27 @@ impl Default for CloudQuality {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SunShaftQuality {
+    pub radial_samples: u32,
+    pub edge_refinement: u32,
+}
+
+impl SunShaftQuality {
+    pub const MAX_RADIAL_SAMPLES: u32 = 48;
+    pub const MAX_EDGE_REFINEMENT: u32 = 8;
+}
+
+impl Default for SunShaftQuality {
+    fn default() -> Self {
+        Self {
+            radial_samples: 12,
+            edge_refinement: 5,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct SceneOptions {
     pub grass_path: crate::grass::GrassPath,
@@ -123,6 +144,8 @@ pub struct Frame {
     terrain_frustum: [[f32; 4]; 6],
     shadow_ranges: [f32; SHADOW_CASCADES],
     pub cloud_quality: CloudQuality,
+    pub sun_shaft_quality: SunShaftQuality,
+    _sun_shaft_padding: [u32; 2],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -175,6 +198,8 @@ impl Frame {
             terrain_frustum: frustum_planes(view_projection).map(|plane| plane.to_array()),
             shadow_ranges: [0.0; SHADOW_CASCADES],
             cloud_quality: CloudQuality::default(),
+            sun_shaft_quality: SunShaftQuality::default(),
+            _sun_shaft_padding: [0; 2],
         }
     }
 

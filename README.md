@@ -8,6 +8,8 @@ Run `cargo run --release --locked` for the alpine overlook. To capture the same 
 
 Press F5 and open **Clouds** to change sky resolution, ray samples, lighting samples, and alpine cloud shadow samples while the scene runs. Set either lighting or cloud shadow samples to zero to skip that work.
 
+In the F5 **God rays** tab, adjust **Radial samples** to resolve finer shafts and **Edge refinement** to smooth them near silhouettes. Set radial samples to zero to turn off god rays. Reset restores 12 radial samples and 5 edge refinement steps.
+
 - PBR Rendering
 - HDR Rendering
 - Deferred Rendering

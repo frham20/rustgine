@@ -3,7 +3,7 @@ use crate::{
     fps::{DEFAULT_FPS_LIMIT, MAX_FPS_LIMIT, MIN_FPS_LIMIT},
     grass::{GrassSettings, MAX_DENSITY_PERCENT, MAX_DRAW_DISTANCE, MIN_DRAW_DISTANCE},
     renderer::{Renderer, SHADOW_MAP_SIZES},
-    scene::{Animation, CloudQuality},
+    scene::{Animation, CloudQuality, SunShaftQuality},
 };
 use imgui::{Condition, ConfigFlags, Context, DrawData, Key, MouseButton, SliderFlags, Ui};
 use std::cell::{Cell, RefCell};
@@ -218,6 +218,9 @@ impl SettingsPanel {
                             ui.text_disabled("Grass rendering is disabled");
                         }
                     }
+                    if let Some(_god_rays) = ui.tab_item("God rays") {
+                        sun_shaft_settings(ui, renderer.sun_shaft_quality());
+                    }
                 }
             });
         if shadow_size != renderer.shadow_size() {
@@ -274,6 +277,28 @@ fn cloud_settings(ui: &Ui, clouds: &mut CloudQuality) {
     }
     if ui.button("Reset cloud settings") {
         *clouds = CloudQuality::default();
+    }
+}
+
+fn sun_shaft_settings(ui: &Ui, quality: &mut SunShaftQuality) {
+    ui.slider_config("Radial samples", 0, SunShaftQuality::MAX_RADIAL_SAMPLES)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut quality.radial_samples);
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "More samples resolve smaller openings in clouds and terrain at a higher GPU cost. Set to 0 to disable god rays.",
+        );
+    }
+    ui.slider_config("Edge refinement", 0, SunShaftQuality::MAX_EDGE_REFINEMENT)
+        .flags(SliderFlags::ALWAYS_CLAMP)
+        .build(&mut quality.edge_refinement);
+    if ui.is_item_hovered() {
+        ui.tooltip_text(
+            "More steps smooth shafts near silhouettes at a higher GPU cost. Set to 0 for a linear edge estimate.",
+        );
+    }
+    if ui.button("Reset god rays settings") {
+        *quality = SunShaftQuality::default();
     }
 }
 

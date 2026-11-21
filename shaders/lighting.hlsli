@@ -17,6 +17,8 @@ cbuffer Frame : register(b0) {
     uint cloudViewSteps;
     uint cloudLightSteps;
     uint cloudShadowSteps;
+    uint sunShaftRadialSamples;
+    uint sunShaftEdgeRefinement;
 };
 cbuffer ShadowPass : register(b3) { uint shadowSlice; }
 Texture2DArray<float> shadowDepth : register(t1);
